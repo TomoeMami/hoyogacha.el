@@ -20,7 +20,7 @@
                    (nap (cdr (assq 'nap json-data))))
               ;; 版本检查
               (when (and version (stringp version)
-                         (string-match "^v\\([0-9]+\\)\\.\\([0-9]+\\)" version))
+                         (string-match "^v?\\([0-9]+\\)\\.\\([0-9]+\\)" version))
                 (let ((major (string-to-number (match-string 1 version)))
                       (minor (string-to-number (match-string 2 version))))
                   (when (or (> major 4) (and (= major 4) (>= minor 1)))
