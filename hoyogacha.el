@@ -397,71 +397,232 @@ GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
               (setq page (1+ page)))))))
     (nreverse records-list)))
 
+;; ------------------------------------------------------------
+;; 导入 UIGF json 文件
+;; ------------------------------------------------------------
 
-;;; 历史记录变量
 (defcustom hoyogacha-data-save-file nil
-  "历史记录：第一个路径（必填，指向保存的文件）"
-  :type 'string
+  "历史记录保存文件路径 (.json)。用于跨 Emacs 会话保存合并后的抽卡数据。"
+  :type '(choice (const :tag "未设置" nil) file)
   :group 'hoyogacha)
 
 (defcustom hoyogacha-data-import-dir nil
-  "历史记录：第二个路径（文件夹，可选，用于合并）"
-  :type 'string
+  "可选：要自动扫描并合并的 UIGF JSON 文件目录。"
+  :type '(choice (const :tag "未设置" nil) directory)
   :group 'hoyogacha)
 
-;;; 读取指定目录下所有符合条件的 JSON 数据
+(defvar hoyogacha-merged-data nil
+  "合并后的 UIGF 数据。关闭统计 buffer 时自动保存到 `hoyogacha-data-save-file'。")
+
+(defconst hoyogacha--uigf-game-keys '(hkrpg nap)
+  "UIGF 顶层游戏数据 key 列表。")
+
+(defun hoyogacha--uigf-version-ok-p (version)
+  "Return non-nil if VERSION (string) is UIGF v4.1 or later."
+  (and version (stringp version)
+       (string-match "\\`v?\\([0-9]+\\)\\.\\([0-9]+\\)" version)
+       (let ((major (string-to-number (match-string 1 version)))
+             (minor (string-to-number (match-string 2 version))))
+         (or (> major 4) (and (= major 4) (>= minor 1))))))
+
+(defun hoyogacha--read-uigf-file (file)
+  "Read FILE as UIGF JSON and return its alist if valid, else nil.
+Only files with info.version >= v4.1 are accepted."
+  (condition-case err
+      (let ((data (json-read-file file)))
+        (when (and (map-elt data 'info)
+                   (hoyogacha--uigf-version-ok-p
+                    (map-nested-elt data '(info version))))
+          data))
+    (error (message "跳过文件 %s: %s" file (error-message-string err))
+           nil)))
+
 (defun hoyogacha-read-json-files (dir-path)
-  "读取 DIR-PATH 目录下所有 .json 文件，返回符合版本要求的数据列表。
-版本要求：info.version >= v4.1"
-  (let ((json-files (directory-files (expand-file-name dir-path) t "\\.json$"))
-        (records nil))
-    (dolist (file json-files)
-      (when (file-regular-p file)
-        (condition-case err
-            (let* ((json-data (json-read-file file))
-                   (version (cdr (map-nested-elt json-data '(info version))))
-                   (nap (cdr (map-elt json-data 'nap))))
-              ;; 版本检查
-              (when (and version (stringp version)
-                         (string-match "^v?\\([0-9]+\\)\\.\\([0-9]+\\)" version))
-                (let ((major (string-to-number (match-string 1 version)))
-                      (minor (string-to-number (match-string 2 version))))
-                  (when (or (> major 4) (and (= major 4) (>= minor 1)))
-                    ;; 遍历 nap 数组，提取每个 list 中的记录
-                    (dolist (nap-item nap)
-                      (let ((list (cdr (map-elt nap-item 'list))))
-                        (when (listp list)
-                          (setq records (append records list)))))))))
-          (error (message "跳过文件 %s: %s" file (error-message-string err))))))
+  "读取 DIR-PATH 下所有符合 UIGF 的 .json 文件，返回 UIGF alist 列表。
+版本要求：info.version >= v4.1。"
+  (let ((files (directory-files (expand-file-name dir-path) t "\\.json\\'" t)))
+    (delq nil
+          (mapcar (lambda (file)
+                    (when (file-regular-p file)
+                      (hoyogacha--read-uigf-file file)))
+                  files))))
+
+(defun hoyogacha--blank-uigf-data ()
+  "返回一个空白 UIGF 数据的 alist。"
+  (list (cons 'info
+              (list (cons 'version "v4.2")
+                    (cons 'export_app "hoyogacha.el")
+                    (cons 'export_app_version "0.1")
+                    (cons 'export_timestamp
+                          (string-to-number (format-time-string "%s")))))
+        (cons 'hkrpg [])
+        (cons 'nap [])))
+
+(defun hoyogacha--ensure-save-file (&optional file)
+  "确保 FILE 存在；若不存在则创建空白 UIGF 文件。
+FILE 为 nil 时使用 `hoyogacha-data-save-file'。"
+  (let ((file (or file hoyogacha-data-save-file)))
+    (unless file
+      (user-error "未设置 hoyogacha-data-save-file"))
+    (unless (file-exists-p file)
+      (let ((dir (file-name-directory file)))
+        (when (and dir (not (file-directory-p dir)))
+          (make-directory dir t)))
+      (with-temp-file file
+        (insert (json-encode (hoyogacha--blank-uigf-data)))))))
+
+(defun hoyogacha--dedupe-list (records &optional seen)
+  "从 RECORDS（vector）中按 (gacha_type . id) 去重，返回去重后的 vector。
+SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创建新的。"
+  (let ((seen (or seen (make-hash-table :test #'equal)))
+        (unique '()))
+    (cl-loop for r across records do
+      (let* ((id (map-elt r 'id))
+             (gacha-type (map-elt r 'gacha_type))
+             (key (cons gacha-type id)))
+        (unless (gethash key seen)
+          (puthash key t seen)
+          (push r unique))))
+    (apply #'vector (nreverse unique))))
+;;; 从 UIGF 数据中提取所有记录（用于统计）
+;;; data 是 UIGF alist；hkrpg/nap 字段是 vector，list 字段也是 vector
+(defun hoyogacha--uigf-records (data)
+  "从 UIGF DATA（alist）中提取所有抽卡记录，返回列表。"
+  (let (records)
+    (dolist (game-key hoyogacha--uigf-game-keys)
+      (let ((game-data (and data (map-elt data game-key))))
+        (when (vectorp game-data)
+          (cl-loop for entry across game-data do
+            (let ((list-vec (map-elt entry 'list)))
+              (when (vectorp list-vec)
+                (cl-loop for r across list-vec do
+                  (push r records))))))))
+    (nreverse records)))
+
+;;; 修改后的合并函数
+(defun hoyogacha--merge-uigf-sources (&rest sources)
+  "合并多个 UIGF 数据（alist），按 (game, uid, gacha_type, id) 去重，返回合并后的 UIGF alist。"
+  (let* ((blank (hoyogacha--blank-uigf-data))
+         (info (or (and sources (map-elt (car sources) 'info))
+                   (map-elt blank 'info)))
+         ;; 收集表：key 为 (game-key . uid)（uid 保留原类型），value 为记录 vector
+         (collected (make-hash-table :test #'equal))
+         ;; 元信息表：key 同上，value 为 (timezone . lang)
+         (meta (make-hash-table :test #'equal)))
+    ;; 遍历所有来源
+    (dolist (data sources)
+      (dolist (game-key hoyogacha--uigf-game-keys)
+        (let ((game-data (and data (map-elt data game-key))))
+          (when (vectorp game-data)
+            (cl-loop for entry across game-data do
+              (let* ((uid (map-elt entry 'uid))
+                     (key (and game-key uid (cons game-key uid)))
+                     (list-vec (map-elt entry 'list)))
+                (when (and key (vectorp list-vec))
+                  ;; 收集该 (game, uid) 的所有遍历记录
+                  (let ((old (gethash key collected)))
+                    (puthash key (if old (vconcat old list-vec) (copy-sequence list-vec))
+                             collected))
+                  ;; 保存元信息（优先第一次出现的）
+                  (unless (gethash key meta)
+                    (puthash key (cons (map-elt entry 'timezone)
+                                       (map-elt entry 'lang))
+                             meta)))))))))
+    ;; 构建结果
+    (let ((result (list (cons 'info (copy-tree info)))))
+      (dolist (game-key hoyogacha--uigf-game-keys)
+        (let (entries)
+          (maphash
+           (lambda (key records)
+             (when (eq (car key) game-key)
+               (let* ((uid (cdr key))
+                      (meta-info (gethash key meta))
+                      (tz (car meta-info))
+                      (lang (cdr meta-info))
+                      (unique-list (hoyogacha--dedupe-list records)))
+                 (push (list (cons 'uid uid)
+                             (cons 'timezone tz)
+                             (cons 'lang lang)
+                             (cons 'list unique-list))
+                       entries))))
+           collected)
+          (push (cons game-key (apply #'vector entries)) result)))
+      (nreverse result))))
+
+(defun hoyogacha-merge-data (&optional save-file import-path)
+  "从 SAVE-FILE 和 IMPORT-PATH 下所有 UIGF JSON 文件合并抽卡数据。
+SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
+`hoyogacha-data-import-dir'。如果 SAVE-FILE 不存在，则先创建空白 UIGF 文件。
+合并结果存入 `hoyogacha-merged-data' 并返回。"
+  (interactive)
+  (setq save-file (or save-file hoyogacha-data-save-file)
+        import-path (or import-path hoyogacha-data-import-dir))
+  (unless save-file
+    (user-error "未指定 hoyogacha-data-save-file"))
+  ;; 同步全局变量，便于后续自动保存
+  (setq hoyogacha-data-save-file save-file)
+  (when import-path
+    (setq hoyogacha-data-import-dir import-path))
+  ;; 确保保存文件存在
+  (hoyogacha--ensure-save-file save-file)
+  (let ((all-sources (list (hoyogacha--read-uigf-file save-file))))
+    ;; 读取导入目录
+    (when (and import-path (not (string-empty-p import-path)))
+      (setq all-sources (nconc (hoyogacha-read-json-files import-path)
+                               all-sources)))
+    (setq hoyogacha-merged-data
+          (apply #'hoyogacha--merge-uigf-sources
+                 (delq nil all-sources)))
+    hoyogacha-merged-data))
+
+(defun hoyogacha--save-merged-data ()
+  "将 `hoyogacha-merged-data' 保存到 `hoyogacha-data-save-file'。"
+  (when (and hoyogacha-data-save-file hoyogacha-merged-data)
+    (let ((file hoyogacha-data-save-file))
+      (when (and (file-name-directory file)
+                 (not (file-directory-p (file-name-directory file))))
+        (make-directory (file-name-directory file) t))
+      (with-temp-file file
+        (insert (json-encode hoyogacha-merged-data))))))
+
+(defun hoyogacha--uigf-records (data)
+  "从 UIGF DATA（alist）中提取所有抽卡记录，返回列表。"
+  (let (records)
+    (dolist (game-key hoyogacha--uigf-game-keys)
+      (let ((game-data (and data (map-elt data game-key))))
+        (when (vectorp game-data)
+          (dotimes (i (length game-data))
+            (let* ((entry (aref game-data i))
+                   (list-vec (map-elt entry 'list)))
+              (when (vectorp list-vec)
+                (setq records (append records (append list-vec nil)))))))))
     records))
 
-;;; 合并两个目录的数据（若第二个目录为空，则只使用第一个）
-(defun hoyogacha-merge-data (save-file &optional import-path)
-  "从 DIR1 和 DIR2 读取数据并合并（去重暂不处理）。"
-  (let* ((saved-records (and save-file (not (string-empty-p save-file))
-                    (json-read-file save-file)))
-         (import-records (and import-path (not (string-empty-p import-path))
-                    (hoyogacha-read-json-files import-path)))
-         (all-records (append records1 records2)))
-    (cl-remove-duplicates all-records :key (lambda (r) (cdr (map-elt r 'id))) :test 'equal)))
-
-;;; 生成统计 buffer
-(defun hoyogacha-stats-buffer (records)
-  "根据 DATA 生成只读统计 buffer，并显示目录信息。"
+(defun hoyogacha-stats-buffer (records &optional data)
+  "根据 RECORDS 生成只读统计 buffer，并显示目录信息。
+DATA 为合并后的 UIGF alist；若提供则更新 `hoyogacha-merged-data'。
+生成的 buffer 关闭时会自动保存 `hoyogacha-merged-data' 到
+`hoyogacha-data-save-file'。"
+  (when data
+    (setq hoyogacha-merged-data data))
   (let ((buf (get-buffer-create "*抽卡统计*")))
+    (with-current-buffer buf
+      (remove-hook 'kill-buffer-hook #'hoyogacha--save-merged-data t)
+      (when hoyogacha-merged-data
+        (add-hook 'kill-buffer-hook #'hoyogacha--save-merged-data nil t)))
     (with-current-buffer buf
       (read-only-mode -1)
       (erase-buffer)
       (insert (format "📊 抽卡数据分析报告\n\n"))
       (insert (format "总抽卡记录数: %d\n\n" (length records)))
 
-      ;; 示例：按 rank_type 分组统计
+      ;; 按 rank_type 分组统计
       (let ((rank-groups (cl-loop for r in records
-                                  for rank = (cdr (map-elt r 'rank_type))
+                                  for rank = (map-elt r 'rank_type)
                                   when rank
                                   collect rank)))
         (insert "按星级 (rank_type) 统计：\n")
-        (dolist (rank '("5" "4" "3"))  ; 常见星级
+        (dolist (rank '("5" "4" "3" "2"))
           (let ((count (cl-count rank rank-groups :test 'equal)))
             (when (> count 0)
               (insert (format "  ★%s 星: %d 个\n" rank count))))))
@@ -471,4 +632,9 @@ GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
       (read-only-mode 1))
     (switch-to-buffer buf)))
 
+(defun hoyogacha-import-and-show-stats ()
+  "导入并合并抽卡数据，然后显示统计 buffer。"
+  (interactive)
+  (let ((data (hoyogacha-merge-data)))
+    (hoyogacha-stats-buffer (hoyogacha--uigf-records data) data)))
 
