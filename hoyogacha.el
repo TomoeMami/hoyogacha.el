@@ -65,7 +65,7 @@
   (let ((appdata (getenv "APPDATA")))
     (if appdata
         (expand-file-name
-         (concat "LocalLow/miHoYo/" (map-elt (cdr (map-elt hoyogacha-games game)) 'locallow))
+         (concat "LocalLow/miHoYo/" (map-elt (cdr (map-elt hoyogacha-games game)) :locallow))
          (expand-file-name ".." appdata))
       (user-error "未找到 APPDATA 环境变量"))))
 
@@ -94,8 +94,8 @@
 (defun hoyogacha--game-dir-from-log-file (log-file game)
   "从 LOG-FILE 中按 GAME 的配置提取游戏目录。"
   (let* ((config (cdr (map-elt hoyogacha-games game)))
-         (prefix (map-elt config 'log-prefix))
-         (suffix (map-elt config 'log-suffix))
+         (prefix (map-elt config :log-prefix))
+         (suffix (map-elt config :log-suffix))
          (line (cl-loop for line in (hoyogacha--read-log-lines log-file)
                         repeat 10
                         when (string-prefix-p prefix line)
