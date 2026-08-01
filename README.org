@@ -12,4 +12,5 @@ Emacs 中的米哈游抽卡记录管理器
 - https://github.com/lgou2w/HoYo.Gacha
 - https://gist.githubusercontent.com/Star-Rail-Station/2512df54c4f35d399cc9abbde665e8f0/raw/get_warp_link_cn.ps1?cachebust=srs
 - https://github.com/vikiboss/gs-helper
+- https://github.com/Summer-Neko/NekoGame
 

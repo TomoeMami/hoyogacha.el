@@ -36,6 +36,49 @@
 (require 'map)
 
 ;; ------------------------------------------------------------
+;; 相关代码的映射
+;; ------------------------------------------------------------
+
+(defvar hoyogacha-games
+  '((hsr
+     :locallow "崩坏：星穹铁道"
+     :log-prefix "Loading player data from "
+     :log-suffix "data.unity3d"
+     :data-key hkrpg
+     :gacha-types (1 2 11 12 21 22)
+     :gacha-type-names (("1"  . "常驻跃迁")
+                        ("2"  . "新手跃迁")
+                        ("11" . "角色活动跃迁")
+                        ("12" . "光锥活动跃迁")
+                        ("21" . "角色联动跃迁")
+                        ("22" . "光锥联动跃迁"))
+     :rank-type-names (("3" . "三星")
+                       ("4" . "四星")
+                       ("5" . "五星")))
+    (zzz
+     :locallow "绝区零"
+     :log-prefix "[Subsystems] Discovering subsystems at path "
+     :log-suffix "UnitySubsystems"
+     :data-key nap
+     :gacha-types (1 2 3 5 102 103)
+     :gacha-type-names (("1"   . "常驻频段")
+                        ("2"   . "独家频段")
+                        ("3"   . "音擎频段")
+                        ("5"   . "邦布频段")
+                        ("102" . "独家重映")
+                        ("103" . "音擎回响"))
+     :rank-type-names (("2" . "B")
+                       ("3" . "A")
+                       ("4" . "S"))))
+  "支持的游戏配置。
+每个条目包含：
+- :data-key      导出 JSON 中对应的顶层 key（符号）
+- :display-name  显示名称
+- :gacha-types   该游戏可能的 gacha_type 值（数字列表，用于拉取记录）
+- :gacha-type-names gacha_type 代码到显示名称的 alist（key 为字符串）
+- :rank-type-names  rank_type 代码到显示名称的 alist（key 为字符串）")
+
+;; ------------------------------------------------------------
 ;; 获取抽卡记录链接
 ;; ------------------------------------------------------------
 
@@ -48,17 +91,6 @@
                  (const :tag "崩坏：星穹铁道" hsr)
                  (const :tag "绝区零" zzz))
   :group 'hoyogacha)
-
-(defvar hoyogacha-games
-  '((hsr
-     :locallow "崩坏：星穹铁道"
-     :log-prefix "Loading player data from "
-     :log-suffix "data.unity3d")
-    (zzz
-     :locallow "绝区零"
-     :log-prefix "[Subsystems] Discovering subsystems at path "
-     :log-suffix "UnitySubsystems"))
-  "支持的游戏配置。")
 
 (defun hoyogacha--locallow-dir (game)
   "返回 GAME 在 LocalLow/miHoYo 下的完整路径。"
