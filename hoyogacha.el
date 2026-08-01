@@ -576,14 +576,18 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
     hoyogacha-merged-data))
 
 (defun hoyogacha--save-merged-data ()
-  "将 `hoyogacha-merged-data' 保存到 `hoyogacha-data-save-file'。"
+  "将 =hoyogacha-merged-data' 保存到 =hoyogacha-data-save-file'。
+保存时强制写入 hoyogacha.el 自己的 info，不继承导入源的元数据。"
   (when (and hoyogacha-data-save-file hoyogacha-merged-data)
-    (let ((file hoyogacha-data-save-file))
+    (let ((file hoyogacha-data-save-file)
+          (data (copy-tree hoyogacha-merged-data)))
+      ;; 替换 info 为插件自己的信息
+      (map-put! data 'info (map-elt (hoyogacha--blank-uigf-data) 'info))
       (when (and (file-name-directory file)
                  (not (file-directory-p (file-name-directory file))))
         (make-directory (file-name-directory file) t))
       (with-temp-file file
-        (insert (json-encode hoyogacha-merged-data))))))
+        (insert (json-encode data))))))
 
 (defun hoyogacha--uigf-records (data)
   "从 UIGF DATA（alist）中提取所有抽卡记录，返回列表。"
@@ -632,7 +636,7 @@ DATA 为合并后的 UIGF alist；若提供则更新 `hoyogacha-merged-data'。
       (read-only-mode 1))
     (switch-to-buffer buf)))
 
-(defun hoyogacha-import-and-show-stats ()
+(defun hoyogacha-show ()
   "导入并合并抽卡数据，然后显示统计 buffer。"
   (interactive)
   (let ((data (hoyogacha-merge-data)))
