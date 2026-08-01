@@ -399,19 +399,22 @@ GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
 
 
 ;;; 历史记录变量
-(defvar hoyogacha-path-data-saved nil
-  "历史记录：第一个路径（必填）")
+(defcustom hoyogacha-data-save-file nil
+  "历史记录：第一个路径（必填，指向保存的文件）"
+  :type 'string
+  :group 'hoyogacha)
 
-(defvar hoyogacha-path-history-import nil
-  "历史记录：第二个路径（可选，用于合并）")
+(defcustom hoyogacha-data-import-dir nil
+  "历史记录：第二个路径（文件夹，可选，用于合并）"
+  :type 'string
+  :group 'hoyogacha)
 
 ;;; 读取指定目录下所有符合条件的 JSON 数据
 (defun hoyogacha-read-json-files (dir-path)
   "读取 DIR-PATH 目录下所有 .json 文件，返回符合版本要求的数据列表。
 版本要求：info.version >= v4.1"
   (let ((json-files (directory-files (expand-file-name dir-path) t "\\.json$"))
-        (records nil)
-        (json-array-type 'list))
+        (records nil))
     (dolist (file json-files)
       (when (file-regular-p file)
         (condition-case err
@@ -433,12 +436,12 @@ GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
     records))
 
 ;;; 合并两个目录的数据（若第二个目录为空，则只使用第一个）
-(defun hoyogacha-merge-data (dir1 &optional dir2)
+(defun hoyogacha-merge-data (save-file &optional import-path)
   "从 DIR1 和 DIR2 读取数据并合并（去重暂不处理）。"
-  (let* ((records1 (and (not (string-empty-p dir1))
-                    (hoyogacha-read-json-files dir1)))
-         (records2 (and dir2 (not (string-empty-p dir2))
-                    (hoyogacha-read-json-files dir2)))
+  (let* ((saved-records (and save-file (not (string-empty-p save-file))
+                    (json-read-file save-file)))
+         (import-records (and import-path (not (string-empty-p import-path))
+                    (hoyogacha-read-json-files import-path)))
          (all-records (append records1 records2)))
     (cl-remove-duplicates all-records :key (lambda (r) (cdr (map-elt r 'id))) :test 'equal)))
 
