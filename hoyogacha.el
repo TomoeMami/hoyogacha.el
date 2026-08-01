@@ -201,7 +201,7 @@
                                   (match-string 0 pair))
                    when (member key '("authkey" "authkey_ver"
                                       "sign_type" "game_biz"
-                                      "lang" "region"))
+                                      "lang"))
                    collect pair)))
     (if kept
         (concat base "?" (mapconcat #'identity kept "&"))
