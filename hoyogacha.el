@@ -33,6 +33,7 @@
 (require 'json)
 (require 'subr-x)
 (require 'plz)   ; 使用 plz.el 替代内置 url
+(require 'map)
 
 ;; ------------------------------------------------------------
 ;; 获取抽卡记录链接
@@ -64,7 +65,7 @@
   (let ((appdata (getenv "APPDATA")))
     (if appdata
         (expand-file-name
-         (concat "LocalLow/miHoYo/" (plist-get (cdr (assq game hoyogacha-games)) :locallow))
+         (concat "LocalLow/miHoYo/" (map-elt (cdr (map-elt hoyogacha-games game)) 'locallow))
          (expand-file-name ".." appdata))
       (user-error "未找到 APPDATA 环境变量"))))
 
@@ -92,9 +93,9 @@
 
 (defun hoyogacha--game-dir-from-log-file (log-file game)
   "从 LOG-FILE 中按 GAME 的配置提取游戏目录。"
-  (let* ((config (cdr (assq game hoyogacha-games)))
-         (prefix (plist-get config :log-prefix))
-         (suffix (plist-get config :log-suffix))
+  (let* ((config (cdr (map-elt hoyogacha-games game)))
+         (prefix (map-elt config 'log-prefix))
+         (suffix (map-elt config 'log-suffix))
          (line (cl-loop for line in (hoyogacha--read-log-lines log-file)
                         repeat 10
                         when (string-prefix-p prefix line)
@@ -217,7 +218,7 @@ GAME 为当前游戏符号，用于错误消息。"
                                    ("Accept" . "application/json"))
                         :as #'json-read
                         :timeout 10)))
-        (equal (alist-get 'retcode data) 0))
+        (equal (map-elt data 'retcode) 0))
     (plz-error
      (message "[%s] 抽卡链接验证失败：%s"
               (symbol-name game) (error-message-string err))
@@ -252,7 +253,7 @@ GAME-OR-PATH 可以是：
                             "星穹铁道" "hsr"
                             (replace-regexp-in-string "绝区零" "zzz"
                                                       (downcase game-or-path))))))
-      (unless (assq game hoyogacha-games)
+      (unless (map-elt hoyogacha-games game)
         (user-error "[%s] 未知游戏：%s" (funcall game-label) game))
       (setq game-dir (hoyogacha-find-game-dir game)))
 
@@ -293,9 +294,82 @@ GAME-OR-PATH 可以是：
           (user-error "[%s] 找到的抽卡链接已失效，请重新在游戏中打开抽卡记录"
                       (funcall game-label)))))))
 
+;; ------------------------------------------------------------
+;; 根据抽卡记录链接拉取记录
+;; ------------------------------------------------------------
+
+
+(defcustom hoyogacha-hsr-gacha-types '(1 2 11 12 21 22)
+  "HSR 的 gacha_type 列表。"
+  :type '(repeat integer)
+  :group 'hoyogacha)
+
+(defun hoyogacha--build-url (url &rest params)
+  "在 URL 上附加查询参数 PARAMS，返回新 URL。
+PARAMS 是键值交替的列表，如 (\"gacha_type\" \"11\" \"page\" \"1\")。"
+  (let ((query-string (mapconcat
+                        (lambda (pair)
+                          (format "%s=%s" (car pair) (cdr pair)))
+                        (cl-loop for (key val) on params by #'cddr
+                                 collect (cons key val))
+                        "&")))
+    (concat url "&" query-string)))
+
+(defun hoyogacha--request-gacha-page (url &optional gacha-type page size)
+  "请求抽卡日志的一页，返回解析后的 JSON alist。
+出错时信号带 [HSR] 前缀的错误。"
+  (let* ((params (when gacha-type (list "gacha_type" (number-to-string gacha-type))))
+         (params (if page (append params (list "page" (number-to-string page))) params))
+         (params (if size (append params (list "size" (number-to-string size))) params))
+         (full-url (apply #'hoyogacha--build-url url params))
+         (response (condition-case err
+                       (plz 'get full-url
+                            :headers '(("User-Agent" . "Mozilla/5.0"))
+                            :as #'json-read
+                            :timeout 15)
+                     (plz-error
+                      (error "[HSR] 抽卡日志请求失败：%s"
+                             (error-message-string err))))))
+    (unless (equal (map-elt response 'retcode) 0)
+      (error "[HSR] 抽卡日志返回错误：%s"
+             (map-elt response 'message )))
+    response))
+
+(defun hoyogacha-fetch-gacha-records-from-url (url &optional gacha-types)
+  "从 URL 拉取全部 HSR 抽卡记录，返回去重后的记录列表。
+GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
+  (interactive "s抽卡日志 URL: ")
+  (let ((gacha-types (or gacha-types hoyogacha-hsr-gacha-types))
+        (records-list '())
+        (seen (make-hash-table :test #'equal)))
+    (dolist (type gacha-types)
+      (message "[HSR] 拉取 gacha_type=%s ..." type)
+      (let ((page 1)
+            (keep-p t))
+        (while keep-p
+          (let* ((response (hoyogacha--request-gacha-page url type page 20))
+                 (data (map-elt response 'data))
+                 (records (map-elt data 'list))
+                 (count (length records)))
+            (unless records
+              (error "[HSR] 响应中缺少 data.list 字段"))
+            (message "[HSR] gacha_type=%s page=%s 获取 %d 条"
+                     type page count)
+            (dolist (record records)
+              (let ((id (map-elt record 'id)))
+                (unless (map-elt seen id)
+                  (map-put! seen id t)
+                  (push record records-list))))
+            (if (< count 20)
+                (setq keep-p nil)
+              (setq page (1+ page)))))))
+    (nreverse records-list)))
+
+
 ;;; 历史记录变量
-(defvar hoyogacha-path-history-saved nil
+(defvar hoyogacha-path-data-saved nil
   "历史记录：第一个路径（必填）")
+
 (defvar hoyogacha-path-history-import nil
   "历史记录：第二个路径（可选，用于合并）")
 
@@ -310,9 +384,8 @@ GAME-OR-PATH 可以是：
       (when (file-regular-p file)
         (condition-case err
             (let* ((json-data (json-read-file file))
-                   (info (cdr (assq 'info json-data)))
-                   (version (cdr (assq 'version info)))
-                   (nap (cdr (assq 'nap json-data))))
+                   (version (cdr (map-nested-elt json-data '(info version))))
+                   (nap (cdr (map-elt json-data 'nap))))
               ;; 版本检查
               (when (and version (stringp version)
                          (string-match "^v?\\([0-9]+\\)\\.\\([0-9]+\\)" version))
@@ -321,7 +394,7 @@ GAME-OR-PATH 可以是：
                   (when (or (> major 4) (and (= major 4) (>= minor 1)))
                     ;; 遍历 nap 数组，提取每个 list 中的记录
                     (dolist (nap-item nap)
-                      (let ((list (cdr (assq 'list nap-item))))
+                      (let ((list (cdr (map-elt nap-item 'list))))
                         (when (listp list)
                           (setq records (append records list)))))))))
           (error (message "跳过文件 %s: %s" file (error-message-string err))))))
@@ -335,7 +408,7 @@ GAME-OR-PATH 可以是：
          (records2 (and dir2 (not (string-empty-p dir2))
                     (hoyogacha-read-json-files dir2)))
          (all-records (append records1 records2)))
-    (cl-remove-duplicates all-records :key (lambda (r) (cdr (assq 'id r))) :test 'equal)))
+    (cl-remove-duplicates all-records :key (lambda (r) (cdr (map-elt r 'id))) :test 'equal)))
 
 ;;; 生成统计 buffer
 (defun hoyogacha-stats-buffer (records)
@@ -349,7 +422,7 @@ GAME-OR-PATH 可以是：
 
       ;; 示例：按 rank_type 分组统计
       (let ((rank-groups (cl-loop for r in records
-                                  for rank = (cdr (assq 'rank_type r))
+                                  for rank = (cdr (map-elt r 'rank_type))
                                   when rank
                                   collect rank)))
         (insert "按星级 (rank_type) 统计：\n")
