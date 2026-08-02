@@ -758,7 +758,7 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
          (entry (and name (assoc name schedule))))
     (cond
      ((hoyogacha--permanent-pool-type-p gacha-type game) "常")
-     ((and entry time (org-string<= (cdr entry) time)) "常")
+     ((and entry time (string< (cdr entry) time)) "常")
      (t "限"))))
 
 (defun hoyogacha--analyze-pool (records game const-map)
