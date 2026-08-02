@@ -690,6 +690,13 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
   (equal (format "%s" (map-elt record 'rank_type))
          (map-elt (hoyogacha--game-config game) :high-rank-code)))
 
+(defun hoyogacha--high-rank-name (game)
+  "返回 GAME 的最高稀有度显示名称，如 \"五星\" 或 \"S\"。"
+  (let ((config (hoyogacha--game-config game)))
+    (or (cdr (assoc (map-elt config :high-rank-code)
+                    (map-elt config :rank-type-names)))
+        (map-elt config :high-rank-code))))
+
 (defun hoyogacha--sort-records-chronologically (records)
   "按时间、id 升序排序抽卡记录。返回新列表。"
   (sort (copy-sequence records)
@@ -849,14 +856,24 @@ ROWS 中每行是列表，元素可为字符串或数字。"
          (high-count (nth 1 analysis))
          (avg (nth 2 analysis))
          (water (nth 3 analysis))
-         (rows (nth 4 analysis)))
+         (rows (nth 4 analysis))
+         (high-name (hoyogacha--high-rank-name game))
+         (limited-count (cl-loop for row in rows
+                                 when (string= (nth 2 row) "限")
+                                 count row))
+         (limited-avg (if (> limited-count 0)
+                          (/ (float total) limited-count)
+                        0)))
     (insert (format "\n=== %s | %s ===\n"
                     (hoyogacha--game-display-name game)
                     pool-name))
-    (insert (format "抽卡总次数: %d，五星/S物品数: %d，平均 %.1f 抽一个，当前水位: %d 抽。\n"
-                    total high-count avg water))
+    (insert (format "抽卡总次数: %d，%s数量: %d，平均 %.1f 抽一个，限定%s平均 %s 抽一个。当前水位: %d 抽。\n"
+                    total high-name high-count avg high-name
+                    (if (> limited-count 0)
+                        (format "%.1f" limited-avg)
+                      "-")
+                    water))
     (when rows
-      ;; 反转行序，使最新记录显示在最上面
       (setq rows (nreverse rows))
       (insert (hoyogacha--format-analysis-table rows) "\n"))))
 
