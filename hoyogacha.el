@@ -912,6 +912,7 @@ ROWS 中每行是列表，元素可为字符串或数字。"
                   (map-elt (map-elt hoyogacha-games game) :gacha-type-names)))
       (format "%s" type)))
 
+;;;###autoload
 (defun hoyogacha-show ()
   "导入并合并抽卡数据，选择游戏后显示统计 buffer。"
   (interactive)
