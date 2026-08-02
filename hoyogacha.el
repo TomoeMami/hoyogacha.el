@@ -273,7 +273,6 @@ GAME-OR-PATH 可以是：
 - nil —— 自动检测。
 
 返回值为清理后的链接，同时存入 `hoyogacha-last-warp-url' 并复制到 kill-ring。"
-  (interactive)
   (let* ((game nil)
          (game-dir nil)
          ;; 用于在错误消息中显示游戏名
@@ -377,7 +376,6 @@ PARAMS 是键值交替的列表，如 (\"gacha_type\" \"11\" \"page\" \"1\")。"
 (defun hoyogacha-fetch-gacha-records-from-url (url &optional gacha-types)
   "从 URL 拉取全部 HSR 抽卡记录，返回去重后的记录列表。
 GACHA-TYPES 可覆盖默认的 =hoyogacha-hsr-gacha-types'。"
-  (interactive "s抽卡日志 URL: ")
   (let ((gacha-types (or gacha-types hoyogacha-hsr-gacha-types))
         (records-list '())
         (seen (make-hash-table :test #'equal)))
@@ -561,7 +559,6 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
 SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
 `hoyogacha-data-import-dir'。如果 SAVE-FILE 不存在，则先创建空白 UIGF 文件。
 合并结果存入 `hoyogacha-merged-data' 并返回。"
-  (interactive)
   (setq save-file (or save-file hoyogacha-data-save-file)
         import-path (or import-path hoyogacha-data-import-dir))
   (unless save-file
