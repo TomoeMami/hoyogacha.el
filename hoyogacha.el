@@ -6,7 +6,7 @@
 ;; Created: 2026.08
 
 ;; URL: https://github.com/TomoeMami/hoyogacha.el
-;; Version: 0.1.0
+;; Version: 0.1.1
 ;; Package-Requires: ((emacs "26.1") (plz "0.9"))
 
 ;; This file is not part of GNU Emacs.
