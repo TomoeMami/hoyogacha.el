@@ -6,8 +6,8 @@
 ;; Created: 2026.08
 
 ;; URL: https://github.com/TomoeMami/hoyogacha.el
-
-;; Package-Requires: ((emacs "25.1") (plz "0.9"))
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "26.1") (plz "0.9"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -947,4 +947,5 @@ ROWS 中每行是列表，元素可为字符串或数字。"
         (goto-char (point-min))
         (read-only-mode 1))
       (switch-to-buffer buf))))
-
+(provide 'hoyogacha)
+;;; hoyogacha.el ends here
