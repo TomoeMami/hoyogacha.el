@@ -6,7 +6,7 @@
 ;; Created: 2026.08
 
 ;; URL: https://github.com/TomoeMami/hoyogacha.el
-;; Version: 0.1.1
+;; Version: 0.1.3
 ;; Package-Requires: ((emacs "26.1") (plz "0.9"))
 
 ;; This file is not part of GNU Emacs.
@@ -660,7 +660,7 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
             ("柳" . "2026-07-29 06:00:00")
             ("朱鸢" . "2026-07-29 06:00:00")
             ("凯撒" . "2026-07-29 06:00:00")
-            ("防暴者Ⅵ型" . "2026-07-29 06:00:00")
+            ("防暴者VI型" . "2026-07-29 06:00:00")
             ("时流贤者" . "2026-07-29 06:00:00")
             ("奔袭獠牙" . "2026-07-29 06:00:00"))))
   "常驻调整表。
