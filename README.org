@@ -11,6 +11,12 @@ Emacs 中的米哈游抽卡记录管理器
 - [X] 保存数据到本地，以 UIGF v4.1+ 标准
 - [X] 展示统计 buffer
 
+* 示例图
+
+[[file:./hsr.png]]
+
+[[file:./zzz.png]]
+
 
 * 使用例
 ** 依赖
