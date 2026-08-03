@@ -68,7 +68,16 @@ Emacs 中的米哈游抽卡记录管理器
   (hoyogacha-data-import-dir "/path/to/your/import/dir"))
 #+end_src
 
-由于目前还未做好链接抓取功能，因此设置好了这些之后直接 =M-x= 执行 =hoyogacha-show= 就行了，选择你需要处理的游戏。
+可选：指定绝区零安装路径。
+星穹铁道会自动扫描获取游戏安装路径，因此不需要指定。
+#+begin_src elisp
+(use-package hoyogacha :demand t
+  :custom
+  (hoyogacha-data-save-file "/path/to/your/data.json")
+  (hoyogacha-data-import-dir "/path/to/your/import/dir")
+  (hoyogacha-zzz-install-dir "D:/Apps/ZenlessZoneZero Game/ZenlessZoneZero_Data"))
+#+end_src
+设置好了这些之后直接 =M-x= 执行 =hoyogacha-show= 就行了，选择你需要处理的游戏。
 * 参考项目
 - https://github.com/lgou2w/HoYo.Gacha
 - https://gist.githubusercontent.com/Star-Rail-Station/2512df54c4f35d399cc9abbde665e8f0/raw/get_warp_link_cn.ps1?cachebust=srs
