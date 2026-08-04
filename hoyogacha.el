@@ -6,7 +6,7 @@
 ;; Created: 2026.08
 
 ;; URL: https://github.com/TomoeMami/hoyogacha.el
-;; Version: 0.1.4
+;; Version: 0.1.5
 ;; Package-Requires: ((emacs "26.1") (plz "0.9"))
 
 ;; This file is not part of GNU Emacs.
@@ -45,7 +45,7 @@
      :log-prefix "Loading player data from "
      :log-suffix "data.unity3d"
      :data-key hkrpg
-     :gacha-types (1 2 11 12 21 22)
+     :gacha-types ("1" "2" "11" "12" "21" "22")
      :gacha-type-names (("1"  . "常驻跃迁")
                         ("2"  . "新手跃迁")
                         ("11" . "角色活动跃迁")
@@ -62,13 +62,13 @@
      :log-prefix "[Subsystems] Discovering subsystems at path "
      :log-suffix "UnitySubsystems"
      :data-key nap
-     :gacha-types (1 2 3 5 102 103)
-     :gacha-type-names (("1"   . "常驻频段")
-                        ("2"   . "独家频段")
-                        ("3"   . "音擎频段")
-                        ("5"   . "邦布频段")
-                        ("102" . "独家重映")
-                        ("103" . "音擎回响"))
+     :gacha-types ("1001" "2001" "3001" "5001" "12001" "13001")
+     :gacha-type-names (("1001"   . "常驻频段")
+                        ("2001"   . "独家频段")
+                        ("3001"   . "音擎频段")
+                        ("5001"   . "邦布频段")
+                        ("12001" . "独家重映")
+                        ("13001" . "音擎回响"))
      :rank-type-names (("2" . "B")
                        ("3" . "A")
                        ("4" . "S"))
@@ -79,7 +79,7 @@
 每个条目包含：
 - :data-key      导出 JSON 中对应的顶层 key（符号）
 - :display-name  显示名称
-- :gacha-types   该游戏可能的 gacha_type 值（数字列表，用于拉取记录）
+- :gacha-types   该游戏可能的 gacha_type 值（字符串列表，用于拉取记录）
 - :gacha-type-names gacha_type 代码到显示名称的 alist（key 为字符串）
 - :rank-type-names  rank_type 代码到显示名称的 alist（key 为字符串）
 - :high-rank-code      最高稀有度对应的 rank_type 字符串
@@ -171,11 +171,6 @@
             (let ((prev-log-file (expand-file-name "Player-prev.log" locallow)))
               (when (file-exists-p prev-log-file)
                 (hoyogacha--game-dir-from-log-file prev-log-file game))))))))
-
-(defun hoyogacha--version-number (version)
-  "将 6.4.0.0 转为 6400 以比较大小。"
-  (string-to-number
-   (mapconcat #'identity (split-string version "\\.") "")))
 
 (defun hoyogacha--latest-cache-file (game-dir)
   "在 GAME-DIR/webCaches 下寻找最新版本的 data_2 文件。"
@@ -372,12 +367,10 @@ URL 是基础抽卡链接。GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
 出错时信号带 [GAME] 前缀的错误。"
   ;; 限速：每次请求前固定等待 1 秒
   (sleep-for 1)
-  (let* ((type-str (cond ((null gacha-type) nil)
-                         ((stringp gacha-type) gacha-type)
-                         (t (number-to-string gacha-type))))
-         (page-str (and page (if (stringp page) page (number-to-string page))))
-         (size-str (and size (if (stringp size) size (number-to-string size))))
-         (end-id-str (and end-id (if (stringp end-id) end-id (number-to-string end-id))))
+  (let* ((type-str (and gacha-type (format "%s" gacha-type)))
+         (page-str (and page (format "%s" page)))
+         (size-str (and size (format "%s" size)))
+         (end-id-str (and end-id (format "%s" end-id)))
          ;; HSR 联动池使用单独的接口
          (target-url (if (member type-str '("21" "22"))
                          (replace-regexp-in-string
@@ -404,51 +397,6 @@ URL 是基础抽卡链接。GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
              (symbol-name game)
              (or (map-elt response 'message) "未知错误")))
     response))
-
-(defun hoyogacha-fetch-gacha-records-from-url (url &optional gacha-types game)
-  "Fetch all available gacha records from URL.
-GACHA-TYPES 缺省时使用 GAME 的配置；GAME 缺省时从 URL 的 game_biz 判断。
-返回 record alist 列表，不合并到 UIGF 数据。"
-  (let* ((game (or game
-                   (if (string-match-p "game_biz=nap" url) 'zzz 'hsr)))
-         (types (or gacha-types
-                    (and (eq game 'hsr) hoyogacha-hsr-gacha-types)
-                    (map-elt (map-elt hoyogacha-games game) :gacha-types)))
-         (seen (make-hash-table :test #'equal))
-         (records '()))
-    (dolist (type types)
-      (let ((page 1) (end-id "0") (stop nil))
-        (while (not stop)
-          (condition-case err
-              (let* ((response (hoyogacha--request-gacha-page
-                                url game type page 20 end-id))
-                     (data-node (map-elt response 'data))
-                     (raw-list (and data-node (map-elt data-node 'list)))
-                     (records-this-page (cond ((null raw-list) nil)
-                                              ((vectorp raw-list) (append raw-list nil))
-                                              (t raw-list))))
-                (if (null records-this-page)
-                    (setq stop t)
-                  (dolist (rec records-this-page)
-                    (let* ((id (map-elt rec 'id))
-                           (key (and id (format "%s" id))))
-                      (when (and key (not (gethash key seen)))
-                        (puthash key t seen)
-                        (push rec records))))
-                  (if (< (length records-this-page) 20)
-                      (setq stop t)
-                    (let* ((last-rec (car (last records-this-page)))
-                           (last-id (map-elt last-rec 'id)))
-                      (if (or (null last-id)
-                              (string= (format "%s" last-id) end-id))
-                          (setq stop t)
-                        (setq end-id (format "%s" last-id))
-                        (setq page (1+ page)))))))
-            (error
-             (message "[%s] 获取 gacha_type=%s 失败：%s"
-                      (symbol-name game) type (error-message-string err))
-             (setq stop t))))))
-    (nreverse records)))
 
 (defun hoyogacha--local-gacha-ids (data game &optional gacha-type)
   "Return a hash table of record IDs for GAME in DATA.
@@ -490,8 +438,7 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
 返回 (DATA . INSERTED-COUNT)。
 每个池子只与该池子已有的 ID 比对，遇到重复即停止该池。"
   (let* ((config (map-elt hoyogacha-games game))
-         (gacha-types (or (and (eq game 'hsr) hoyogacha-hsr-gacha-types)
-                          (map-elt config :gacha-types)))
+         (gacha-types (map-elt config :gacha-types))
          (new-records '())
          (inserted 0))
     (dolist (type gacha-types)
@@ -655,21 +602,6 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
           (push r unique))))
     (apply #'vector (nreverse unique))))
 
-;;; 从 UIGF 数据中提取所有记录（用于统计）
-;;; data 是 UIGF alist；hkrpg/nap 字段是 vector，list 字段也是 vector
-(defun hoyogacha--uigf-records (data)
-  "从 UIGF DATA（alist）中提取所有抽卡记录，返回列表。"
-  (let (records)
-    (dolist (game-key hoyogacha--uigf-game-keys)
-      (let ((game-data (and data (map-elt data game-key))))
-        (when (vectorp game-data)
-          (cl-loop for entry across game-data do
-            (let ((list-vec (map-elt entry 'list)))
-              (when (vectorp list-vec)
-                (cl-loop for r across list-vec do
-                  (push r records))))))))
-    (nreverse records)))
-
 ;;; 修改后的合并函数
 (defun hoyogacha--merge-uigf-sources (&rest sources)
   "合并多个 UIGF 数据（alist），按 (game, uid, gacha_type, id) 去重，返回合并后的 UIGF alist。"
@@ -758,19 +690,6 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
         (make-directory (file-name-directory file) t))
       (with-temp-file file
         (insert (json-encode data))))))
-
-(defun hoyogacha--uigf-records (data)
-  "从 UIGF DATA（alist）中提取所有抽卡记录，返回列表。"
-  (let (records)
-    (dolist (game-key hoyogacha--uigf-game-keys)
-      (let ((game-data (and data (map-elt data game-key))))
-        (when (vectorp game-data)
-          (dotimes (i (length game-data))
-            (let* ((entry (aref game-data i))
-                   (list-vec (map-elt entry 'list)))
-              (when (vectorp list-vec)
-                (setq records (append records (append list-vec nil)))))))))
-    records))
 
 ;; ------------------------------------------------------------
 ;; 数据分析与展示
@@ -909,9 +828,9 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
   (let* ((blocks (min 9 (floor (max 0 pity) 10)))
          (str (concat (make-string blocks ?#)
                       (make-string (- 9 blocks) ?-)))
-         (face (cond ((<= pity 37) `(:foreground ,(or (modus-themes-get-color-value 'green) "green")))
-                     ((<= pity 75) `(:foreground ,(or (modus-themes-get-color-value 'yellow) "yellow")))
-                     (t `(:foreground ,(or (modus-themes-get-color-value 'red) "red"))))))
+         (face (cond ((<= pity 37) 'success)
+                     ((<= pity 75) 'warning)
+                     (t 'error))))
     (propertize str 'face face)))
 
 (defun hoyogacha--permanent-pool-type-p (gacha-type game)
@@ -928,7 +847,7 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
          (entry (and name (assoc name schedule))))
     (cond
      ((hoyogacha--permanent-pool-type-p gacha-type game) "常")
-     ((and entry time (string< (cdr entry) time)) "常")
+     ((and entry time (not (string< time (cdr entry)))) "常")
      (t "限"))))
 
 (defun hoyogacha--analyze-pool (records game const-map)
@@ -998,7 +917,7 @@ ROWS 中每行是列表，元素可为字符串或数字。"
               (time (nth 5 row))
               (flag-str (cond
                          ((string= flag "限")
-                          (propertize "限" 'face `(:foreground ,(or (modus-themes-get-color-value 'red-intense) "red"))))
+                          (propertize "限" 'face 'error))
                          ((string= flag "常")
                           (propertize "常"))
                          (t flag))))
@@ -1097,8 +1016,7 @@ ROWS 中每行是列表，元素可为字符串或数字。"
                          (symbol-name game) (cdr result)))))
         (user-error
          (message "[%s] 获取抽卡链接失败：%s"
-                  (symbol-name game) (error-message-string err))
-         (message "请先在游戏中打开抽卡记录页面，再重试。"))
+                  (symbol-name game) (error-message-string err)))
         (error
          (message "[%s] 获取抽卡记录过程中出错：%s"
                   (symbol-name game) (error-message-string err))
