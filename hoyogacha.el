@@ -361,15 +361,15 @@ PARAMS 是键值交替的列表，如 (\"gacha_type\" \"11\" \"page\" \"1\")。"
             query-string)))
 
 (defun hoyogacha--request-gacha-page (url game &optional gacha-type page size end-id)
-  "请求 GAME 的抽卡日志的一页，返回解析后的 JSON alist。
-URL 是基础抽卡链接。GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
-每次调用前强制等待 1 秒，避免请求过于频繁。
-出错时信号带 [GAME] 前缀的错误。"
+  "请求 GAME 的抽卡日志的一页。
+GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
+END-ID 为 nil 时不附带 end_id 参数。"
   ;; 限速：每次请求前固定等待 1 秒
   (sleep-for 1)
   (let* ((type-str (and gacha-type (format "%s" gacha-type)))
          (page-str (and page (format "%s" page)))
          (size-str (and size (format "%s" size)))
+         ;; 关键：end-id 为 nil 时，end-id-str 也为 nil，不会加入 params
          (end-id-str (and end-id (format "%s" end-id)))
          ;; HSR 联动池使用单独的接口
          (target-url (if (member type-str '("21" "22"))
@@ -398,19 +398,25 @@ URL 是基础抽卡链接。GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
              (or (map-elt response 'message) "未知错误")))
     response))
 
-(defun hoyogacha--local-gacha-ids (data game &optional gacha-type)
-  "Return a hash table of record IDs for GAME in DATA.
-If GACHA-TYPE is non-nil, only include records with that gacha_type."
+(defun hoyogacha--local-gacha-ids (data game uid &optional gacha-type)
+  "Return a hash table of record IDs for GAME and UID in DATA.
+If GACHA-TYPE is non-nil, only include records with that gacha_type.
+UID is compared as a string."
   (let ((ids (make-hash-table :test #'equal))
         (game-key (map-elt (map-elt hoyogacha-games game) :data-key))
-        (type-str (and gacha-type (format "%s" gacha-type))))
+        (type-str (and gacha-type (format "%s" gacha-type)))
+        (uid-str (format "%s" uid)))
     (when data
       (let ((game-vec (map-elt data game-key)))
         (when (vectorp game-vec)
           (dotimes (i (length game-vec))
             (let* ((entry (aref game-vec i))
+                   (entry-uid (map-elt entry 'uid))
                    (list-vec (map-elt entry 'list)))
-              (when (vectorp list-vec)
+              ;; 仅处理 UID 匹配的条目
+              (when (and entry-uid
+                         (string= (format "%s" entry-uid) uid-str)
+                         (vectorp list-vec))
                 (dotimes (j (length list-vec))
                   (let ((rec (aref list-vec j)))
                     (when (and (or (null type-str)
@@ -436,25 +442,26 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
   "Fetch gacha records for GAME from URL and merge into DATA.
 
 返回 (DATA . INSERTED-COUNT)。
-每个池子只与该池子已有的 ID 比对，遇到重复即停止该池。"
+每个池子只与该池子内、同一 UID 下已有的 ID 比对，遇到重复即停止该池。"
   (let* ((config (map-elt hoyogacha-games game))
          (gacha-types (map-elt config :gacha-types))
          (new-records '())
          (inserted 0))
     (dolist (type gacha-types)
       (message "[%s] 拉取 gacha_type=%s ..." (symbol-name game) type)
-      ;; 每个池子独立的本地 ID 表
-      (let ((pool-local-ids (hoyogacha--local-gacha-ids data game type))
-            (page 1)
-            (end-id "0")
+      (let ((page 1)
+            (end-id nil)                ; 第一页不传 end_id
             (empty-pages 0)
+            (prev-first-id nil)
+            (uid nil)                   ; 拉到第一页后确定
+            (pool-local-ids nil)        ; 确定 UID 后构建
             (stop nil))
         (while (not stop)
           (let ((attempt 0)
                 (success nil))
             (while (and (not success) (< attempt 3))
               (setq attempt (1+ attempt))
-              (condition-case-unless-debug err
+              (condition-case err
                   (let* ((response (hoyogacha--request-gacha-page
                                     url game type page 20 end-id))
                          (data-node (map-elt response 'data))
@@ -462,41 +469,59 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
                          (records (cond ((null raw-list) nil)
                                         ((vectorp raw-list) (append raw-list nil))
                                         (t raw-list))))
+                    ;; 处理本页记录
                     (if (null records)
                         (progn
                           (setq empty-pages (1+ empty-pages))
                           (if (>= empty-pages 2)
                               (setq stop t)
-                            (setq page (1+ page))))
+                            (setq page (1+ page)))
+                          (setq success t))   ; 空页也视为成功
+                      ;; 非空页
                       (setq empty-pages 0)
-                      ;; 检查本页记录，遇到本池已有 ID 就停止
-                      (let ((pool-done
-                             (catch 'hoyogacha--pool-done
-                               (dolist (rec records)
-                                 (let ((id (map-elt rec 'id)))
-                                   (when id
-                                     (setq id (format "%s" id))
-                                     (when (gethash id pool-local-ids)
-                                       (throw 'hoyogacha--pool-done t))
-                                     ;; 新记录，加入本地池 ID 表和结果
-                                     (puthash id t pool-local-ids)
-                                     (push rec new-records)
-                                     (setq inserted (1+ inserted)))))
-                               nil)))
-                        (cond
-                         (pool-done
+                      ;; 如果是第一页，获取 UID 并初始化该 UID 的本地 ID 表
+                      (unless uid
+                        (setq uid (map-elt (car records) 'uid))
+                        (unless uid
+                          (error "[%s] 获取的记录缺少 uid" (symbol-name game)))
+                        (setq uid (format "%s" uid))
+                        (setq pool-local-ids (hoyogacha--local-gacha-ids data game uid type)))
+                      ;; 循环保护：若本页第一条 id 与上一页相同，强制停止
+                      (let* ((first-id (map-elt (car records) 'id))
+                             (first-id-str (and first-id (format "%s" first-id))))
+                        (when (and prev-first-id first-id-str
+                                   (string= first-id-str prev-first-id))
                           (setq stop t))
-                         ((< (length records) 20)
-                          (setq stop t))
-                         (t
-                          (let* ((last-rec (car (last records)))
-                                 (last-id (map-elt last-rec 'id)))
-                            (if (or (null last-id)
-                                    (string= (format "%s" last-id) end-id))
-                                (setq stop t)
-                              (setq end-id (format "%s" last-id))
-                              (setq page (1+ page)))))))
-                    (setq success t)))
+                      (unless stop
+                        (let ((pool-done
+                               (catch 'hoyogacha--pool-done
+                                 (dolist (rec records)
+                                   (let ((id (map-elt rec 'id)))
+                                     (when id
+                                       (setq id (format "%s" id))
+                                       (when (gethash id pool-local-ids)
+                                         (throw 'hoyogacha--pool-done t))
+                                       (puthash id t pool-local-ids)
+                                       (push rec new-records)
+                                       (setq inserted (1+ inserted)))))
+                                 nil)))
+                          (cond
+                           (pool-done
+                            (setq stop t))
+                           ((< (length records) 20)
+                            (setq stop t))
+                           (t
+                            (let* ((last-rec (car (last records)))
+                                   (last-id (map-elt last-rec 'id)))
+                              (if (or (null last-id)
+                                      ;; 如果上一页已经有 end-id，且本页最后 id 与之一致
+                                      (and end-id
+                                           (string= (format "%s" last-id) end-id)))
+                                  (setq stop t)
+                                (setq end-id (format "%s" last-id))
+                                (setq page (1+ page))))))
+                          (setq prev-first-id first-id-str)))
+                      (setq success t))))   ; 成功完成本页处理
                 (error
                  (message "[%s] gacha_type=%s 第 %d 页请求失败（尝试 %d/3）：%s"
                           (symbol-name game) type page attempt
@@ -1022,10 +1047,11 @@ ROWS 中每行是列表，元素可为字符串或数字。"
                   (symbol-name game) (error-message-string err))
          (message "将使用本地已有数据进行分析。")))
       (setq hoyogacha-merged-data local-data)
+
+      ;; ★ 核心修改：合并后立即保存（不再等待 buffer 关闭）
+      (hoyogacha--save-merged-data)
+
       (let ((buf (get-buffer-create "*抽卡统计*")))
-        (with-current-buffer buf
-          (remove-hook 'kill-buffer-hook #'hoyogacha--save-merged-data t)
-          (add-hook 'kill-buffer-hook #'hoyogacha--save-merged-data nil t))
         (with-current-buffer buf
           (read-only-mode -1)
           (erase-buffer)
