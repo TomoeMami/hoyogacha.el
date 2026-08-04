@@ -6,7 +6,7 @@
 ;; Created: 2026.08
 
 ;; URL: https://github.com/TomoeMami/hoyogacha.el
-;; Version: 0.1.5
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "26.1") (plz "0.9"))
 
 ;; This file is not part of GNU Emacs.
@@ -731,6 +731,12 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
                 :value-type (alist :key-type string :value-type string))
   :group 'hoyogacha)
 
+(defcustom hoyogacha-uid-aliases nil
+  "UID 别名表，用于在分析界面显示便于识别的名字。
+格式：((\"UID\" . \"别名\") ...)"
+  :type '(alist :key-type string :value-type string)
+  :group 'hoyogacha)
+
 (defcustom hoyogacha-character-standard-schedule
   '((hsr . (("姬子" . "2023-01-01 00:00:00")
             ("布洛妮娅" . "2023-01-01 00:00:00")
@@ -783,6 +789,14 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
                 :value-type (alist :key-type string :value-type string))
   :group 'hoyogacha)
 
+(defun hoyogacha--uid-alias (uid)
+  "返回 UID 的别名；若未设置别名，则返回 UID 本身（字符串形式）。"
+  (let* ((uid-str (format "%s" uid))  ; 强制转成字符串
+         (alias (cdr (assoc uid-str hoyogacha-uid-aliases))))
+    (if (and alias (not (string-empty-p alias)))
+        alias
+      uid-str)))
+
 (defun hoyogacha--game-config (game)
   "返回 GAME 的配置 plist。"
   (map-elt hoyogacha-games game))
@@ -816,27 +830,33 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
                  (string-to-number (format "%s" (map-elt b 'id)))))))))
 
 (defun hoyogacha--compute-constellation-map (records game)
-  "计算每个最高稀有度物品的重复次数（命座/精炼）。"
-  (let ((counts (make-hash-table :test #'equal))
-        (map (make-hash-table :test #'equal)))
-    (dolist (rec (hoyogacha--sort-records-chronologically records))
-      (when (hoyogacha--high-rank-p rec game)
-        (let* ((name (map-elt rec 'name))
-               (id (format "%s" (map-elt rec 'id)))
-               (const (gethash name counts 0)))
-          (puthash (cons name id) const map)
-          (puthash name (min 6 (1+ const)) counts))))
-    map))
+  "为 RECORDS 中每个 UID 计算最高稀有度物品的重复次数（命座/精炼）。
+返回哈希表，键为 UID 字符串，值为该 UID 的 const-map（(name . id) -> 次数）。"
+  (let ((uid-to-map (make-hash-table :test #'equal)))
+    (dolist (uid-group (hoyogacha--group-records-by-uid records))
+      (let* ((uid (car uid-group))
+             (uid-records (cdr uid-group))
+             (counts (make-hash-table :test #'equal))
+             (map (make-hash-table :test #'equal)))
+        (dolist (rec (hoyogacha--sort-records-chronologically uid-records))
+          (when (hoyogacha--high-rank-p rec game)
+            (let* ((name (map-elt rec 'name))
+                   (id (format "%s" (map-elt rec 'id)))
+                   (const (gethash name counts 0)))
+              (puthash (cons name id) const map)
+              (puthash name (min 6 (1+ const)) counts))))
+        (puthash uid map uid-to-map)))
+    uid-to-map))
 
-(defun hoyogacha--group-records-by-gacha-type (records)
-  "按 gacha_type 分组，返回 ((type . records) ...)。"
+(defun hoyogacha--group-records-by-uid (records)
+  "按 UID 分组 RECORDS，返回 ((uid . records) ...)。"
   (let (groups)
     (dolist (rec records)
-      (let* ((type (format "%s" (map-elt rec 'gacha_type)))
-             (cell (assoc type groups)))
+      (let* ((uid (format "%s" (map-elt rec 'uid)))
+             (cell (assoc uid groups)))
         (if cell
             (setcdr cell (cons rec (cdr cell)))
-          (push (cons type (list rec)) groups))))
+          (push (cons uid (list rec)) groups))))
     (mapcar (lambda (cell)
               (cons (car cell) (nreverse (cdr cell))))
             (nreverse groups))))
@@ -875,40 +895,50 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
      ((and entry time (not (string< time (cdr entry)))) "常")
      (t "限"))))
 
-(defun hoyogacha--analyze-pool (records game const-map)
-  "分析同一 UID 同一卡池，返回统计数据和表格行。"
-  (let* ((sorted (hoyogacha--sort-records-chronologically records))
-         (total (length sorted))
-         (last-high-idx nil)
-         (high-count 0)
-         rows)
-    (cl-loop for rec in sorted
-             for i from 0
-             do
-             (when (hoyogacha--high-rank-p rec game)
-               (setq high-count (1+ high-count))
-               (let* ((name (map-elt rec 'name))
-                      (display-name (hoyogacha--abbreviate-name name game))
-                      (id (format "%s" (map-elt rec 'id)))
-                      (const (if (and id (not (equal id "nil")))
-                                 (gethash (cons name id) const-map 0)
-                               0))
-                      (limit-flag (hoyogacha--limited-or-standard-p rec game))
-                      (pity (if last-high-idx
-                                (- i last-high-idx)
-                              (1+ i)))
-                      (chart (hoyogacha--pity-chart pity))
-                      (time (or (map-elt rec 'time) "")))
-                 (push (list display-name const limit-flag chart pity time) rows)
-                 (setq last-high-idx i))))
-    (setq rows (nreverse rows))
-    (let ((water (if last-high-idx
-                     (- total last-high-idx 1)
-                   total))
-          (avg (if (> high-count 0)
-                   (/ (float total) high-count)
-                 0.0)))
-      (list total high-count avg water rows))))
+(defun hoyogacha--analyze-pool (records game &optional const-map-by-uid)
+  "分析同一卡池的 RECORDS，自动按 UID 分组独立统计。
+若未提供 CONST-MAP-BY-UID，则自动调用 `hoyogacha--compute-constellation-map' 生成。
+返回 ((UID . (TOTAL HIGH-COUNT AVG WATER ROWS)) ...)。"
+  (let ((const-map-by-uid (or const-map-by-uid
+                              (hoyogacha--compute-constellation-map records game)))
+        (result '()))
+    (dolist (uid-group (hoyogacha--group-records-by-uid records))
+      (let* ((uid (car uid-group))
+             (uid-records (cdr uid-group))
+             (const-map (gethash uid const-map-by-uid (make-hash-table :test #'equal)))
+             (sorted (hoyogacha--sort-records-chronologically uid-records))
+             (total (length sorted))
+             (last-high-idx nil)
+             (high-count 0)
+             rows)
+        (cl-loop for rec in sorted
+                 for i from 0
+                 do
+                 (when (hoyogacha--high-rank-p rec game)
+                   (setq high-count (1+ high-count))
+                   (let* ((name (map-elt rec 'name))
+                          (display-name (hoyogacha--abbreviate-name name game))
+                          (id (format "%s" (map-elt rec 'id)))
+                          (const (if (and id (not (equal id "nil")))
+                                     (gethash (cons name id) const-map 0)
+                                   0))
+                          (limit-flag (hoyogacha--limited-or-standard-p rec game))
+                          (pity (if last-high-idx
+                                    (- i last-high-idx)
+                                  (1+ i)))
+                          (chart (hoyogacha--pity-chart pity))
+                          (time (or (map-elt rec 'time) "")))
+                     (push (list display-name const limit-flag chart pity time) rows)
+                     (setq last-high-idx i))))
+        (setq rows (nreverse rows))
+        (let ((water (if last-high-idx
+                         (- total last-high-idx 1)
+                       total))
+              (avg (if (> high-count 0)
+                       (/ (float total) high-count)
+                     0.0)))
+          (push (cons uid (list total high-count avg water rows)) result))))
+    (nreverse result)))
 
 (defun hoyogacha--pad-right (str width)
   "右补空格到 WIDTH，保留 text property。"
@@ -956,33 +986,42 @@ ROWS 中每行是列表，元素可为字符串或数字。"
           " |")))
      string-rows "\n")))
 
-(defun hoyogacha--insert-pool-analysis (game uid pool-name records const-map)
-  "插入单个卡池的分析内容（不含 UID，表格按时间倒序）。"
-  (let* ((analysis (hoyogacha--analyze-pool records game const-map))
-         (total (nth 0 analysis))
-         (high-count (nth 1 analysis))
-         (avg (nth 2 analysis))
-         (water (nth 3 analysis))
-         (rows (nth 4 analysis))
-         (high-name (hoyogacha--high-rank-name game))
-         (limited-count (cl-loop for row in rows
-                                 when (string= (nth 2 row) "限")
-                                 count row))
-         (limited-avg (if (> limited-count 0)
-                          (/ (float total) limited-count)
-                        0)))
-    (insert (format "\n=== %s | %s ===\n"
-                    (hoyogacha--game-display-name game)
-                    pool-name))
-    (insert (format "抽卡总次数: %d，%s数量: %d，平均 %.1f 抽一个，限定%s平均 %s 抽一个。当前水位: %d 抽。\n"
-                    total high-name high-count avg high-name
-                    (if (> limited-count 0)
-                        (format "%.1f" limited-avg)
-                      "-")
-                    water))
-    (when rows
-      (setq rows (nreverse rows))
-      (insert (hoyogacha--format-analysis-table rows) "\n"))))
+(defun hoyogacha--insert-pool-analysis (game pool-name records &optional const-map-by-uid)
+  "为同一个卡池的 RECORDS 插入分析内容（自动处理多 UID）。
+若未提供 CONST-MAP-BY-UID，则自动计算。"
+  (let ((analysis-list (hoyogacha--analyze-pool records game const-map-by-uid)))
+    (if (null analysis-list)
+        (insert (format "\n=== %s | %s ===\n"
+                        (hoyogacha--game-display-name game) pool-name)
+                "（无记录）\n")
+      (dolist (item analysis-list)
+        (let* ((uid (car item))
+               (stats (cdr item))
+               (total (nth 0 stats))
+               (high-count (nth 1 stats))
+               (avg (nth 2 stats))
+               (water (nth 3 stats))
+               (rows (nth 4 stats))
+               (high-name (hoyogacha--high-rank-name game))
+               (limited-count (cl-loop for row in rows
+                                       when (string= (nth 2 row) "限")
+                                       count row))
+               (limited-avg (if (> limited-count 0)
+                                (/ (float total) limited-count)
+                              0)))
+          (insert (format "\n=== %s | %s ===\n"
+                          (hoyogacha--game-display-name game)
+                          pool-name))
+          (insert (format "抽卡总次数: %d，%s数量: %d，平均 %.1f 抽一个，限定%s平均 %s 抽一个。当前水位: %d 抽。\n"
+                          total high-name high-count avg high-name
+                          (if (> limited-count 0)
+                              (format "%.1f" limited-avg)
+                            "-")
+                          water))
+          (when rows
+            ;; 保持原有倒序显示（最新在上）
+            (setq rows (nreverse rows))
+            (insert (hoyogacha--format-analysis-table rows) "\n")))))))
 
 (defun hoyogacha--choose-game ()
   "交互式选择要分析的游戏，显示全名（如“崩坏：星穹铁道”/“绝区零”）。"
@@ -1052,27 +1091,27 @@ ROWS 中每行是列表，元素可为字符串或数字。"
       (hoyogacha--save-merged-data)
 
       (let ((buf (get-buffer-create "*抽卡统计*")))
-        (with-current-buffer buf
-          (read-only-mode -1)
-          (erase-buffer)
-          (insert (format "📊 %s 抽卡数据分析报告\n\n"
-                          (hoyogacha--game-display-name game)))
-          (let ((uid-entries (hoyogacha--records-for-game local-data game)))
-            (if (null uid-entries)
-                (insert "没有找到该游戏的数据。\n")
-              (dolist (entry uid-entries)
-                (let* ((uid (car entry))
-                       (records (cdr entry))
-                       (const-map (hoyogacha--compute-constellation-map records game)))
-                  (insert (format "\nUID: %s\n" uid))
-                  (dolist (group (hoyogacha--group-records-by-gacha-type records))
-                    (let* ((type (car group))
-                           (pool-name (hoyogacha--pool-name game type)))
-                      (hoyogacha--insert-pool-analysis
-                       game uid pool-name (cdr group) const-map)))))))
-          (goto-char (point-min))
-          (read-only-mode 1))
-        (switch-to-buffer buf)))))
+  (with-current-buffer buf
+    (read-only-mode -1)
+    (erase-buffer)
+    (insert (format "📊 %s 抽卡数据分析报告\n\n"
+                    (hoyogacha--game-display-name game)))
+    (let ((uid-entries (hoyogacha--records-for-game local-data game)))
+      (if (null uid-entries)
+          (insert "没有找到该游戏的数据。\n")
+        (dolist (entry uid-entries)
+          (let* ((uid (car entry))
+                 (records (cdr entry))
+                 (const-map-by-uid (hoyogacha--compute-constellation-map records game)))
+            (insert (format "\nUID: %s\n" (hoyogacha--uid-alias uid)))
+            (dolist (group (hoyogacha--group-records-by-gacha-type records))
+              (let* ((type (car group))
+                     (pool-name (hoyogacha--pool-name game type)))
+                (hoyogacha--insert-pool-analysis
+                 game pool-name (cdr group) const-map-by-uid)))))))
+    (goto-char (point-min))
+    (read-only-mode 1))
+  (switch-to-buffer buf)))))
 
 (provide 'hoyogacha)
 ;;; hoyogacha.el ends here
