@@ -62,19 +62,19 @@
      :log-prefix "[Subsystems] Discovering subsystems at path "
      :log-suffix "UnitySubsystems"
      :data-key nap
-     :gacha-types ("1001" "2001" "3001" "5001" "12001" "13001")
-     :gacha-type-names (("1001"   . "常驻频段")
-                        ("2001"   . "独家频段")
-                        ("3001"   . "音擎频段")
-                        ("5001"   . "邦布频段")
-                        ("12001" . "独家重映")
-                        ("13001" . "音擎回响"))
+     :gacha-types ("1" "2" "3" "5" "102" "103")
+     :gacha-type-names (("1"   . "常驻频段")
+                        ("2"   . "独家频段")
+                        ("3"   . "音擎频段")
+                        ("5"   . "邦布频段")
+                        ("102" . "独家重映")
+                        ("103" . "音擎回响"))
      :rank-type-names (("2" . "B")
                        ("3" . "A")
                        ("4" . "S"))
      :high-rank-code "4"
      :character-item-types ("代理人" "角色")
-     :permanent-gacha-types ("1001" "5001")))
+     :permanent-gacha-types ("1" "5")))
   "支持的游戏配置。
 每个条目包含：
 - :data-key      导出 JSON 中对应的顶层 key（符号）
