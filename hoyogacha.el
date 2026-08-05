@@ -378,7 +378,9 @@ END-ID 为 nil 时不附带 end_id 参数。"
                           "/getLdGachaLog\\2"
                           url)
                        url))
-         (params (append (and type-str (list "gacha_type" type-str))
+         (params (append (and type-str (if (eq game 'zzz)
+                                  (list "real_gacha_type" type-str)
+                                (list "gacha_type" type-str)))
                          (and page-str (list "page" page-str))
                          (and size-str (list "size" size-str))
                          (and end-id-str (list "end_id" end-id-str))))
