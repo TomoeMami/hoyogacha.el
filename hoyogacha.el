@@ -36,6 +36,34 @@
 (require 'map)
 
 ;; ------------------------------------------------------------
+;; 异步请求基础设施
+;; ------------------------------------------------------------
+
+(defvar hoyogacha--fetch-process nil
+  "当前进行中的 plz 异步请求进程，用于取消操作。")
+
+(defvar hoyogacha--fetch-canceled-p nil
+  "非 nil 表示用户已请求取消当前后台拉取任务。")
+
+(defvar hoyogacha--fetching-p nil
+  "非 nil 表示当前有一个后台拉取任务正在进行（用于防止重入）。")
+
+(defun hoyogacha--plz-error-string (err)
+  "返回 ERR（plz-error 结构体）的可读描述字符串。"
+  (or (plz-error-message err)
+      (let ((resp (plz-error-response err)))
+        (when resp (format "HTTP %s" (plz-response-status resp))))
+      (let ((curl (plz-error-curl-error err)))
+        (when curl (format "curl %s: %s" (car curl) (cdr curl))))
+      "未知错误"))
+
+(defun hoyogacha--after-delay (seconds fn)
+  "SECONDS 秒后调用 FN；SECONDS 小于等于 0 时立即调用。"
+  (if (<= seconds 0)
+      (funcall fn)
+    (run-at-time seconds nil fn)))
+
+;; ------------------------------------------------------------
 ;; 相关代码的映射
 ;; ------------------------------------------------------------
 
@@ -207,10 +235,10 @@
                                 (lambda (a b)
                                   (time-less-p
                                    (file-attribute-modification-time (file-attributes b))
-                                   (file-attribute-modification-time (file-attributes a)))))))
+                                   (file-attribute-modification-time (file-attributes a))))))))
             (let ((file (expand-file-name "Cache/Cache_Data/data_2" latest-dir)))
               (when (file-exists-p file)
-                file))))))))
+                file)))))))
 
 (defun hoyogacha--read-cache-file (cache-file)
   "复制 CACHE-FILE 到临时文件后读取，避免文件被占用。"
@@ -273,16 +301,31 @@ GAME 为当前游戏符号，用于错误消息。"
               (symbol-name game) (error-message-string err))
      nil)))
 
-(defun hoyogacha-get-warp-url (&optional game-or-path)
-  "定位并返回抽卡记录链接。
+(defun hoyogacha--warp-url-valid-async (url game ok fail)
+  "异步请求 URL 并检查 retcode 是否为 0。
+有效时调用 (funcall OK)；否则调用 (funcall FAIL MSG)。
+GAME 为当前游戏符号，用于错误消息。"
+  (setq hoyogacha--fetch-process
+        (plz 'get url
+          :headers '(("User-Agent" . "Mozilla/5.0")
+                     ("Accept" . "application/json"))
+          :as #'json-read
+          :timeout 10
+          :then (lambda (data)
+                  (if (equal (map-elt data 'retcode) 0)
+                      (funcall ok)
+                    (funcall fail
+                             (format "[%s] 找到的抽卡链接已失效，请重新在游戏中打开抽卡记录"
+                                     (symbol-name game)))))
+          :else (lambda (err)
+                  (funcall fail
+                           (format "[%s] 抽卡链接验证失败：%s"
+                                   (symbol-name game)
+                                   (hoyogacha--plz-error-string err)))))))
 
-GAME-OR-PATH 可以是：
-- 目录路径（字符串） —— 直接作为游戏安装目录；
-- 符号 'hsr 或 'zzz —— 指定游戏；
-- 字符串 \"hsr\" 或 \"zzz\" —— 指定游戏；
-- nil —— 自动检测。
-
-返回值为清理后的链接，同时存入 `hoyogacha-last-warp-url' 并复制到 kill-ring。"
+(defun hoyogacha--locate-raw-warp-url (game-or-path)
+  "定位并返回 (GAME . RAW-URL)，不进行网络验证。
+GAME-OR-PATH 的取值规则同 `hoyogacha-get-warp-url'。"
   (let* ((game nil)
          (game-dir nil)
          ;; 用于在错误消息中显示游戏名
@@ -333,14 +376,47 @@ GAME-OR-PATH 可以是：
         (unless raw-url
           (user-error "[%s] 未在缓存中找到抽卡链接；请先在游戏中打开抽卡记录页面"
                       (funcall game-label)))
+        (cons game raw-url)))))
 
-        (if (hoyogacha--warp-url-valid-p raw-url game)
-            (let ((url (hoyogacha--clean-warp-url raw-url)))
-              (setq hoyogacha-last-warp-url url)
-              (kill-new url)
-              url)
-          (user-error "[%s] 找到的抽卡链接已失效，请重新在游戏中打开抽卡记录"
-                      (funcall game-label)))))))
+(defun hoyogacha-get-warp-url (&optional game-or-path)
+  "定位并返回抽卡记录链接（同步，会阻塞 Emacs）。
+
+GAME-OR-PATH 可以是：
+- 目录路径（字符串） —— 直接作为游戏安装目录；
+- 符号 'hsr 或 'zzz —— 指定游戏；
+- 字符串 \"hsr\" 或 \"zzz\" —— 指定游戏；
+- nil —— 自动检测。
+
+返回值为清理后的链接，同时存入 `hoyogacha-last-warp-url' 并复制到 kill-ring。
+交互场景推荐使用非阻塞的 `hoyogacha-get-warp-url-async'。"
+  (let* ((loc (hoyogacha--locate-raw-warp-url game-or-path))
+         (game (car loc))
+         (raw-url (cdr loc)))
+    (if (hoyogacha--warp-url-valid-p raw-url game)
+        (let ((url (hoyogacha--clean-warp-url raw-url)))
+          (setq hoyogacha-last-warp-url url)
+          (kill-new url)
+          url)
+      (user-error "[%s] 找到的抽卡链接已失效，请重新在游戏中打开抽卡记录"
+                  (symbol-name game)))))
+
+(defun hoyogacha-get-warp-url-async (game-or-path ok &optional fail)
+  "异步定位并返回抽卡记录链接（不阻塞 Emacs）。
+
+成功时调用 (funcall OK URL)，URL 已清理、存入 `hoyogacha-last-warp-url'
+并复制到 kill-ring；失败时调用 (funcall FAIL MSG)，FAIL 缺省时 message 报错。"
+  (let* ((loc (hoyogacha--locate-raw-warp-url game-or-path))
+         (game (car loc))
+         (raw-url (cdr loc))
+         (fail (or fail (lambda (msg) (message "%s" msg)))))
+    (hoyogacha--warp-url-valid-async
+     raw-url game
+     (lambda ()
+       (let ((url (hoyogacha--clean-warp-url raw-url)))
+         (setq hoyogacha-last-warp-url url)
+         (kill-new url)
+         (funcall ok url)))
+     fail)))
 
 ;; ------------------------------------------------------------
 ;; 根据抽卡记录链接拉取记录
@@ -360,12 +436,9 @@ PARAMS 是键值交替的列表，如 (\"gacha_type\" \"11\" \"page\" \"1\")。"
             (if (string-match-p "\\?" url) "&" "?")
             query-string)))
 
-(defun hoyogacha--request-gacha-page (url game &optional gacha-type page size end-id)
-  "请求 GAME 的抽卡日志的一页。
-GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
-END-ID 为 nil 时不附带 end_id 参数。"
-  ;; 限速：每次请求前固定等待 1 秒
-  (sleep-for 1)
+(defun hoyogacha--build-gacha-request-url (url game gacha-type page size end-id)
+  "根据抽卡链接 URL 构建 GAME 的一页请求 URL。
+GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数；END-ID 为 nil 时不附带 end_id。"
   (let* ((type-str (and gacha-type (format "%s" gacha-type)))
          (page-str (and page (format "%s" page)))
          (size-str (and size (format "%s" size)))
@@ -379,12 +452,21 @@ END-ID 为 nil 时不附带 end_id 参数。"
                           url)
                        url))
          (params (append (and type-str (if (eq game 'zzz)
-                                  (list "real_gacha_type" type-str)
-                                (list "gacha_type" type-str)))
+                                           (list "real_gacha_type" type-str)
+                                         (list "gacha_type" type-str)))
                          (and page-str (list "page" page-str))
                          (and size-str (list "size" size-str))
-                         (and end-id-str (list "end_id" end-id-str))))
-         (full-url (apply #'hoyogacha--build-url target-url params))
+                         (and end-id-str (list "end_id" end-id-str)))))
+    (apply #'hoyogacha--build-url target-url params)))
+
+(defun hoyogacha--request-gacha-page (url game &optional gacha-type page size end-id)
+  "请求 GAME 的抽卡日志的一页（同步，会阻塞 Emacs）。
+GACHA-TYPE、PAGE、SIZE、END-ID 为查询参数。
+END-ID 为 nil 时不附带 end_id 参数。"
+  ;; 限速：每次请求前固定等待 1 秒
+  (sleep-for 1)
+  (let* ((full-url (hoyogacha--build-gacha-request-url
+                    url game gacha-type page size end-id))
          (response (condition-case-unless-debug err
                        (plz 'get full-url
                             :headers '(("User-Agent" . "Mozilla/5.0"))
@@ -399,6 +481,30 @@ END-ID 为 nil 时不附带 end_id 参数。"
              (symbol-name game)
              (or (map-elt response 'message) "未知错误")))
     response))
+
+(defun hoyogacha--request-gacha-page-async (url game gacha-type page end-id ok fail)
+  "异步请求 GAME 的抽卡日志的一页（不阻塞 Emacs）。
+成功（retcode=0）时调用 (funcall OK RESPONSE)；否则调用 (funcall FAIL MSG)。
+不包含限速延迟，由调用方负责。"
+  (let ((full-url (hoyogacha--build-gacha-request-url
+                   url game gacha-type page 20 end-id)))
+    (setq hoyogacha--fetch-process
+          (plz 'get full-url
+            :headers '(("User-Agent" . "Mozilla/5.0"))
+            :as #'json-read
+            :timeout 15
+            :then (lambda (response)
+                    (if (equal (map-elt response 'retcode) 0)
+                        (funcall ok response)
+                      (funcall fail
+                               (format "[%s] 抽卡日志返回错误：%s"
+                                       (symbol-name game)
+                                       (or (map-elt response 'message) "未知错误")))))
+            :else (lambda (err)
+                    (funcall fail
+                             (format "[%s] 抽卡日志请求失败：%s"
+                                     (symbol-name game)
+                                     (hoyogacha--plz-error-string err))))))))
 
 (defun hoyogacha--local-gacha-ids (data game uid &optional gacha-type)
   "Return a hash table of record IDs for GAME and UID in DATA.
@@ -540,6 +646,144 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
                           game uid-str (nreverse new-records))))
             (cons (hoyogacha--merge-uigf-sources data source) inserted)))
       (cons data inserted))))
+
+(defun hoyogacha--fetch-and-merge-gacha-data-async (data game url done)
+  "异步抓取 GAME 的抽卡记录并合并进 DATA（不阻塞 Emacs）。
+
+抓取全部完成后调用 (funcall DONE NEW-DATA INSERTED-COUNT)；中途取消时
+同样以已有结果调用 DONE。每次请求间保持 1 秒限速，每页失败最多重试 3 次。"
+  (setq hoyogacha--fetch-canceled-p nil)
+  (let* ((config (map-elt hoyogacha-games game))
+         (gacha-types (map-elt config :gacha-types))
+         (new-records '())
+         (inserted 0)
+         (types-left gacha-types))
+    (cl-labels
+        ((finish ()
+           ;; 收尾：合并新增记录并回调 DONE（异步回调内不能抛出未捕获错误）
+           (if new-records
+               (let* ((first-rec (car new-records))
+                      (uid (map-elt first-rec 'uid)))
+                 (if uid
+                     (let* ((uid-str (format "%s" uid))
+                            (source (hoyogacha--make-uigf-source
+                                     game uid-str (nreverse new-records))))
+                       (funcall done
+                                (hoyogacha--merge-uigf-sources data source)
+                                inserted))
+                   (message "[%s] 获取的记录缺少 uid，本次新增记录未保存"
+                            (symbol-name game))
+                   (funcall done data 0)))
+             (funcall done data inserted)))
+         (run-type ()
+           (if hoyogacha--fetch-canceled-p
+               (finish)
+             (if (null types-left)
+                 (finish)
+               (let* ((type (pop types-left))
+                      (state (list :type type
+                                   :page 1 :end-id nil :empty-pages 0
+                                   :prev-first-id nil :uid nil
+                                   :pool-local-ids nil :attempt 0 :stop nil)))
+                 (message "[%s] 拉取 gacha_type=%s ..." (symbol-name game) type)
+                 (fetch-page state)))))
+         (fetch-page (state)
+           (if (map-elt state :stop)
+               (run-type)
+             (hoyogacha--after-delay
+              1
+              (lambda ()
+                (if hoyogacha--fetch-canceled-p
+                    (finish)
+                  (hoyogacha--request-gacha-page-async
+                   url game (map-elt state :type) (map-elt state :page)
+                   (map-elt state :end-id)
+                   (lambda (response) (handle-page state response))
+                   (lambda (msg) (handle-error state msg))))))))
+         (handle-page (state response)
+           (condition-case err
+               (let* ((data-node (map-elt response 'data))
+                      (raw-list (and data-node (map-elt data-node 'list)))
+                      (records (cond ((null raw-list) nil)
+                                     ((vectorp raw-list) (append raw-list nil))
+                                     (t raw-list))))
+                 (if (null records)
+                     ;; 空页：连续两次则停止该池
+                     (progn
+                       (setf (map-elt state :empty-pages)
+                             (1+ (map-elt state :empty-pages)))
+                       (if (>= (map-elt state :empty-pages) 2)
+                           (setf (map-elt state :stop) t)
+                         (setf (map-elt state :page) (1+ (map-elt state :page))))
+                       (setf (map-elt state :attempt) 0)
+                       (fetch-page state))
+                   ;; 非空页
+                   (setf (map-elt state :empty-pages) 0)
+                   ;; 如果是第一页，获取 UID 并初始化该 UID 的本地 ID 表
+                   (unless (map-elt state :uid)
+                     (let ((uid (map-elt (car records) 'uid)))
+                       (unless uid
+                         (error "[%s] 获取的记录缺少 uid" (symbol-name game)))
+                       (setf (map-elt state :uid) (format "%s" uid))
+                       (setf (map-elt state :pool-local-ids)
+                             (hoyogacha--local-gacha-ids
+                              data game (map-elt state :uid)
+                              (map-elt state :type)))))
+                   ;; 循环保护：若本页第一条 id 与上一页相同，强制停止
+                   (let* ((first-id (map-elt (car records) 'id))
+                          (first-id-str (and first-id (format "%s" first-id))))
+                     (when (and (map-elt state :prev-first-id) first-id-str
+                                (string= first-id-str
+                                         (map-elt state :prev-first-id)))
+                       (setf (map-elt state :stop) t))
+                     (unless (map-elt state :stop)
+                       (let ((pool-done
+                              (catch 'hoyogacha--pool-done
+                                (dolist (rec records)
+                                  (let ((id (map-elt rec 'id)))
+                                    (when id
+                                      (setq id (format "%s" id))
+                                      (when (gethash id (map-elt state :pool-local-ids))
+                                        (throw 'hoyogacha--pool-done t))
+                                      (puthash id t (map-elt state :pool-local-ids))
+                                      (push rec new-records)
+                                      (setq inserted (1+ inserted)))))
+                                nil)))
+                         (cond
+                          (pool-done
+                           (setf (map-elt state :stop) t))
+                          ((< (length records) 20)
+                           (setf (map-elt state :stop) t))
+                          (t
+                           (let* ((last-rec (car (last records)))
+                                  (last-id (map-elt last-rec 'id)))
+                             (if (or (null last-id)
+                                     ;; 如果上一页已经有 end-id，且本页最后 id 与之一致
+                                     (and (map-elt state :end-id)
+                                          (string= (format "%s" last-id)
+                                                   (map-elt state :end-id))))
+                                 (setf (map-elt state :stop) t)
+                               (setf (map-elt state :end-id) (format "%s" last-id))
+                               (setf (map-elt state :page)
+                                     (1+ (map-elt state :page))))))))
+                       (setf (map-elt state :prev-first-id) first-id-str)))
+                   (setf (map-elt state :attempt) 0)
+                   (fetch-page state)))
+             (error (handle-error state (error-message-string err)))))
+         (handle-error (state msg)
+           (if hoyogacha--fetch-canceled-p
+               (finish)
+             (let ((attempt (1+ (map-elt state :attempt))))
+               (setf (map-elt state :attempt) attempt)
+               (message "[%s] gacha_type=%s 第 %d 页请求失败（尝试 %d/3）：%s"
+                        (symbol-name game) (map-elt state :type)
+                        (map-elt state :page) attempt msg)
+               (if (>= attempt 3)
+                   (progn
+                     (setf (map-elt state :stop) t)
+                     (run-type))
+                 (fetch-page state))))))
+      (run-type))))
 
 ;; ------------------------------------------------------------
 ;; 导入 UIGF json 文件
@@ -863,6 +1107,19 @@ SAVE-FILE 或 IMPORT-PATH 为 nil 时使用 `hoyogacha-data-save-file' 和
               (cons (car cell) (nreverse (cdr cell))))
             (nreverse groups))))
 
+(defun hoyogacha--group-records-by-gacha-type (records)
+  "按 gacha_type 分组 RECORDS，返回 ((gacha-type-str . records) ...)。"
+  (let (groups)
+    (dolist (rec records)
+      (let* ((type-str (format "%s" (map-elt rec 'gacha_type)))
+             (cell (assoc type-str groups)))
+        (if cell
+            (setcdr cell (cons rec (cdr cell)))
+          (push (cons type-str (list rec)) groups))))
+    (mapcar (lambda (cell)
+              (cons (car cell) (nreverse (cdr cell))))
+            (nreverse groups))))
+
 (defun hoyogacha--abbreviate-name (name game)
   "按缩写表返回 GAME 角色 NAME 的缩写；未收录则返回原名。"
   (let ((table (cdr (assq game hoyogacha-name-abbreviations))))
@@ -1060,60 +1317,106 @@ ROWS 中每行是列表，元素可为字符串或数字。"
                   (map-elt (hoyogacha--game-config game) :gacha-type-names)))
       (format "%s" type)))
 
+(defun hoyogacha--render-buffer (game data &optional loading)
+  "将 GAME 与 DATA 渲染到 *抽卡统计* buffer。
+LOADING 非 nil 时在标题下插入后台拉取提示。
+只更新 buffer 内容，不切换窗口。"
+  (let ((buf (get-buffer-create "*抽卡统计*")))
+    (with-current-buffer buf
+      (read-only-mode -1)
+      (erase-buffer)
+      (insert (format "📊 %s 抽卡数据分析报告\n\n"
+                      (hoyogacha--game-display-name game)))
+      (when loading
+        (insert "正在后台拉取新记录，完成后将自动刷新……\n"))
+      (let ((uid-entries (hoyogacha--records-for-game data game)))
+        (if (null uid-entries)
+            (insert "没有找到该游戏的数据。\n")
+          (dolist (entry uid-entries)
+            (let* ((uid (car entry))
+                   (records (cdr entry))
+                   (const-map-by-uid (hoyogacha--compute-constellation-map records game)))
+              (insert (format "\nUID: %s\n" (hoyogacha--uid-alias uid)))
+              (dolist (group (hoyogacha--group-records-by-gacha-type records))
+                (let* ((type (car group))
+                       (pool-name (hoyogacha--pool-name game type)))
+                  (hoyogacha--insert-pool-analysis
+                   game pool-name (cdr group) const-map-by-uid)))))))
+      (goto-char (point-min))
+      (read-only-mode 1))
+    buf))
+
 ;;;###autoload
 (defun hoyogacha-show ()
-  "导入并合并抽卡数据，选择游戏后显示统计 buffer。"
+  "导入并合并抽卡数据，选择游戏后显示统计 buffer。
+
+先立即展示本地已有数据，随后在后台异步拉取新记录（不阻塞 Emacs），
+拉取完成后自动保存并刷新 buffer。可用 `hoyogacha-cancel' 中止拉取。"
   (interactive)
+  (when hoyogacha--fetching-p
+    (user-error "已有拉取任务正在进行，请等待其完成或执行 `hoyogacha-cancel'"))
   (let ((data (hoyogacha-merge-data)))
     (unless data (user-error "没有可用的抽卡数据"))
     (let* ((game (hoyogacha--choose-game))
            (local-data data))
-      ;; 尝试获取抽卡链接；失败不阻塞分析
-      (condition-case err
-          (if (and (eq game 'zzz) (null hoyogacha-zzz-install-dir))
-              (message "未设置 hoyogacha-zzz-install-dir，跳过绝区零新记录拉取")
-            (let ((url (hoyogacha-get-warp-url game)))
-              (message "[%s] 获取到抽卡链接，开始拉取新记录..." (symbol-name game))
-              (let ((result (hoyogacha--fetch-and-merge-gacha-data
-                             local-data game url)))
-                (setq local-data (car result))
-                (setq hoyogacha-merged-data local-data)
-                (message "[%s] 拉取完成，新增 %d 条记录"
-                         (symbol-name game) (cdr result)))))
-        (user-error
-         (message "[%s] 获取抽卡链接失败：%s"
-                  (symbol-name game) (error-message-string err)))
-        (error
-         (message "[%s] 获取抽卡记录过程中出错：%s"
-                  (symbol-name game) (error-message-string err))
-         (message "将使用本地已有数据进行分析。")))
-      (setq hoyogacha-merged-data local-data)
+      (cond
+       ;; 绝区零未配置安装目录：跳过拉取，直接展示本地数据
+       ((and (eq game 'zzz) (null hoyogacha-zzz-install-dir))
+        (message "未设置 hoyogacha-zzz-install-dir，跳过绝区零新记录拉取")
+        (hoyogacha--save-merged-data)
+        (hoyogacha--render-buffer game local-data nil)
+        (switch-to-buffer (get-buffer-create "*抽卡统计*")))
+       (t
+        ;; 先用本地数据立即渲染，避免用户等待
+        (hoyogacha--render-buffer game local-data t)
+        (switch-to-buffer (get-buffer-create "*抽卡统计*"))
+        ;; 后台异步拉取新记录；失败不阻塞分析
+        (setq hoyogacha--fetching-p t)
+        (condition-case err
+            (hoyogacha-get-warp-url-async
+             game
+             (lambda (url)
+               (message "[%s] 获取到抽卡链接，开始拉取新记录..." (symbol-name game))
+               (hoyogacha--fetch-and-merge-gacha-data-async
+                local-data game url
+                (lambda (new-data inserted)
+                  (setq hoyogacha--fetching-p nil)
+                  (condition-case err
+                      (progn
+                        (setq hoyogacha-merged-data new-data)
+                        (hoyogacha--save-merged-data)
+                        (hoyogacha--render-buffer game new-data nil)
+                        (message "[%s] 拉取完成，新增 %d 条记录"
+                                 (symbol-name game) inserted))
+                    (error
+                     (message "[%s] 保存或刷新数据时出错：%s"
+                              (symbol-name game)
+                              (error-message-string err)))))))
+             (lambda (msg)
+               (setq hoyogacha--fetching-p nil)
+               (message "[%s] 获取抽卡链接失败：%s" (symbol-name game) msg)
+               (hoyogacha--render-buffer game local-data nil)))
+          (user-error
+           (setq hoyogacha--fetching-p nil)
+           (message "[%s] 获取抽卡链接失败：%s"
+                    (symbol-name game) (error-message-string err)))
+          (error
+           (setq hoyogacha--fetching-p nil)
+           (message "[%s] 获取抽卡记录过程中出错：%s"
+                    (symbol-name game) (error-message-string err))
+           (message "将使用本地已有数据进行分析。"))))))))
 
-      ;; ★ 核心修改：合并后立即保存（不再等待 buffer 关闭）
-      (hoyogacha--save-merged-data)
-
-      (let ((buf (get-buffer-create "*抽卡统计*")))
-  (with-current-buffer buf
-    (read-only-mode -1)
-    (erase-buffer)
-    (insert (format "📊 %s 抽卡数据分析报告\n\n"
-                    (hoyogacha--game-display-name game)))
-    (let ((uid-entries (hoyogacha--records-for-game local-data game)))
-      (if (null uid-entries)
-          (insert "没有找到该游戏的数据。\n")
-        (dolist (entry uid-entries)
-          (let* ((uid (car entry))
-                 (records (cdr entry))
-                 (const-map-by-uid (hoyogacha--compute-constellation-map records game)))
-            (insert (format "\nUID: %s\n" (hoyogacha--uid-alias uid)))
-            (dolist (group (hoyogacha--group-records-by-gacha-type records))
-              (let* ((type (car group))
-                     (pool-name (hoyogacha--pool-name game type)))
-                (hoyogacha--insert-pool-analysis
-                 game pool-name (cdr group) const-map-by-uid)))))))
-    (goto-char (point-min))
-    (read-only-mode 1))
-  (switch-to-buffer buf)))))
+(defun hoyogacha-cancel ()
+  "取消正在进行的后台拉取任务。
+已拉取的记录仍会合并保存并刷新统计 buffer。"
+  (interactive)
+  (if (not hoyogacha--fetching-p)
+      (message "[hoyogacha] 当前没有进行中的拉取任务")
+    (setq hoyogacha--fetch-canceled-p t)
+    (when (and hoyogacha--fetch-process
+               (process-live-p hoyogacha--fetch-process))
+      (kill-process hoyogacha--fetch-process))
+    (message "[hoyogacha] 已请求取消后台拉取")))
 
 (provide 'hoyogacha)
 ;;; hoyogacha.el ends here
