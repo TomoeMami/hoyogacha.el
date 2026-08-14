@@ -902,10 +902,20 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
                      (key (and game-key uid-str (cons game-key uid-str)))
                      (list-vec (map-elt entry 'list)))
                 (when (and key (vectorp list-vec))
-                  ;; 收集该 (game, uid) 的所有遍历记录
-                  (let ((old (gethash key collected)))
-                    (puthash key (if old (vconcat old list-vec) (copy-sequence list-vec))
-                             collected))
+                  ;; 导入的 UIGF 记录通常不含 uid 字段（uid 在条目级别），
+                  ;; 这里补全记录级 uid 并统一为字符串，否则后续按记录
+                  ;; uid 分组分析时，同一账号会被拆成多个池子分组。
+                  (let ((filled
+                         (apply #'vector
+                                (mapcar
+                                 (lambda (rec)
+                                   (if (map-elt rec 'uid)
+                                       rec
+                                     (cons (cons 'uid uid-str) rec)))
+                                 (append list-vec nil)))))
+                    (let ((old (gethash key collected)))
+                      (puthash key (if old (vconcat old filled) filled)
+                               collected)))
                   ;; 保存元信息（优先第一次出现的）
                   (unless (gethash key meta)
                     (puthash key (cons (map-elt entry 'timezone)
