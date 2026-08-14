@@ -616,8 +616,10 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
                           (cond
                            (pool-done
                             (setq stop t))
-                           ((< (length records) 20)
-                            (setq stop t))
+                           ;; 注意：不能用「本页不足 20 条」判断结束——
+                           ;; 绝区零(nap) API 每页固定返回 5 条（无视 size=20），
+                           ;; 按 20 判断会提前停止，漏掉后续记录。
+                           ;; 终止条件依靠：pool-done、连续空页、end_id 循环保护。
                            (t
                             (let* ((last-rec (car (last records)))
                                    (last-id (map-elt last-rec 'id)))
@@ -752,8 +754,10 @@ UID 应为字符串；RECORDS 是 record alist 列表。"
                          (cond
                           (pool-done
                            (setf (map-elt state :stop) t))
-                          ((< (length records) 20)
-                           (setf (map-elt state :stop) t))
+                          ;; 注意：不能用「本页不足 20 条」判断结束——
+                          ;; 绝区零(nap) API 每页固定返回 5 条（无视 size=20），
+                          ;; 按 20 判断会提前停止，漏掉后续记录。
+                          ;; 终止条件依靠：pool-done、连续空页、end_id 循环保护。
                           (t
                            (let* ((last-rec (car (last records)))
                                   (last-id (map-elt last-rec 'id)))
