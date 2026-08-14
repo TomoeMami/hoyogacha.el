@@ -535,16 +535,25 @@ UID is compared as a string."
                       (puthash (format "%s" (map-elt rec 'id)) t ids))))))))))
     ids))
 
+(defun hoyogacha--standardize-record (rec)
+  "返回去掉了 uid 字段的 REC 副本。
+UIGF 标准中 uid 只存在于条目级别，list 内的记录不应携带 uid。"
+  (if (map-elt rec 'uid)
+      (cl-remove 'uid rec :key #'car)
+    rec))
+
 (defun hoyogacha--make-uigf-source (game uid records)
   "Return a UIGF alist containing RECORDS for GAME under UID.
-UID 应为字符串；RECORDS 是 record alist 列表。"
+UID 应为字符串；RECORDS 是 record alist 列表。
+写入前会去除每条记录中的 uid 字段，以符合 UIGF 标准。"
   (list (cons 'info (map-elt (hoyogacha--blank-uigf-data) 'info))
         (cons (map-elt (map-elt hoyogacha-games game) :data-key)
               (vector
                (list (cons 'uid uid)
                      (cons 'timezone nil)
                      (cons 'lang nil)
-                     (cons 'list (vconcat records)))))))
+                     (cons 'list (vconcat (mapcar #'hoyogacha--standardize-record
+                                                  records))))))))
 
 (defun hoyogacha--fetch-and-merge-gacha-data (data game url)
   "Fetch gacha records for GAME from URL and merge into DATA.
@@ -902,19 +911,15 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
                      (key (and game-key uid-str (cons game-key uid-str)))
                      (list-vec (map-elt entry 'list)))
                 (when (and key (vectorp list-vec))
-                  ;; 导入的 UIGF 记录通常不含 uid 字段（uid 在条目级别），
-                  ;; 这里补全记录级 uid 并统一为字符串，否则后续按记录
-                  ;; uid 分组分析时，同一账号会被拆成多个池子分组。
-                  (let ((filled
+                  ;; 按 UIGF 标准，uid 只存在于条目级别，list 记录不应携带 uid。
+                  ;; 抓取数据会带记录级 uid（导入数据则没有），统一去除：
+                  ;; 既符合标准，也避免按记录 uid 分组时同一账号被拆成多组。
+                  (let ((standardized
                          (apply #'vector
-                                (mapcar
-                                 (lambda (rec)
-                                   (if (map-elt rec 'uid)
-                                       rec
-                                     (cons (cons 'uid uid-str) rec)))
-                                 (append list-vec nil)))))
+                                (mapcar #'hoyogacha--standardize-record
+                                        (append list-vec nil)))))
                     (let ((old (gethash key collected)))
-                      (puthash key (if old (vconcat old filled) filled)
+                      (puthash key (if old (vconcat old standardized) standardized)
                                collected)))
                   ;; 保存元信息（优先第一次出现的）
                   (unless (gethash key meta)
