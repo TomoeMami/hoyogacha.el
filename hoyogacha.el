@@ -871,7 +871,9 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
     (cl-loop for r across records do
       (let* ((id (map-elt r 'id))
              (gacha-type (map-elt r 'gacha_type))
-             (key (cons gacha-type id)))
+             ;; 归一化为字符串：不同来源可能把 id/gacha_type 存成数字或字符串，
+             ;; 不归一化会导致同一条记录被重复保留。
+             (key (cons (format "%s" gacha-type) (format "%s" id))))
         (unless (gethash key seen)
           (puthash key t seen)
           (push r unique))))
@@ -883,7 +885,9 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
   (let* ((blank (hoyogacha--blank-uigf-data))
          (info (or (and sources (map-elt (car sources) 'info))
                    (map-elt blank 'info)))
-         ;; 收集表：key 为 (game-key . uid)（uid 保留原类型），value 为记录 vector
+         ;; 收集表：key 为 (game-key . uid)，uid 归一化为字符串
+         ;;（导入的 UIGF 文件可能把 uid 存成数字，与本插件写入的字符串
+         ;; 不一致会导致同一账号被拆成两条记录）
          (collected (make-hash-table :test #'equal))
          ;; 元信息表：key 同上，value 为 (timezone . lang)
          (meta (make-hash-table :test #'equal)))
@@ -894,7 +898,8 @@ SEEN 为可选的哈希表，用于存储已出现的 key；若未提供则创�
           (when (vectorp game-data)
             (cl-loop for entry across game-data do
               (let* ((uid (map-elt entry 'uid))
-                     (key (and game-key uid (cons game-key uid)))
+                     (uid-str (and uid (format "%s" uid)))
+                     (key (and game-key uid-str (cons game-key uid-str)))
                      (list-vec (map-elt entry 'list)))
                 (when (and key (vectorp list-vec))
                   ;; 收集该 (game, uid) 的所有遍历记录
