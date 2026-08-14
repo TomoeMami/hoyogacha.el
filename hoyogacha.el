@@ -1352,10 +1352,10 @@ LOADING 非 nil 时在标题下插入后台拉取提示。
       (insert (format "📊 %s 抽卡数据分析报告\n\n"
                       (hoyogacha--game-display-name game)))
       (when loading
-        (insert "正在后台拉取新记录，完成后将自动刷新……\n"))
+        (insert "⚠️正在后台拉取新记录，完成后将自动刷新……\n"))
       (let ((uid-entries (hoyogacha--records-for-game data game)))
         (if (null uid-entries)
-            (insert "没有找到该游戏的数据。\n")
+            (insert "⚠️没有找到该游戏的数据。\n")
           (dolist (entry uid-entries)
             (let* ((uid (car entry))
                    (records (cdr entry))
