@@ -21,36 +21,61 @@ Emacs 中的米哈游抽卡记录管理器
 * 使用例
 ** 依赖
 
-本插件需要以下依赖：
+本插件依赖 [[https://github.com/alphapapa/plz.el][plz]]：一个 Emacs 的 HTTP 客户端库。
 
-[[https://github.com/alphapapa/plz.el][plz]]： 一个 Emacs 的 HTTP 客户端库。
-
-请确保在您的 Emacs 配置中已经安装并加载了这些包。
+通过下面推荐的 TomoELPA 或 =:vc= 方式安装时，=plz= 会作为包依赖自动安装，无需手动处理。
 ** 安装与配置
 
-将 =hoyogacha.el= 文件放置到您的 Emacs =load-path= 中。
+*** 推荐：从 TomoELPA 安装
 
-在您的 Emacs 配置文件 (如 =init.el= ) 中添加以下代码：
+TomoELPA 是作者自建的 ELPA 仓库。添加归档源后，用 =use-package= 即可完成安装与配置。将下面这段完整的配置加入您的 Emacs 配置文件（如 =init.el= ）：
 
+#+begin_src elisp
+(require 'package)
+(add-to-list 'package-archives
+             '("tomoelpa" . "https://tomoemami.github.io/tomoelpa/snapshots/") t)
+(package-initialize)
+(unless package-archive-contents
+  (package-refresh-contents))
+(use-package hoyogacha
+  :ensure t
+  :demand t
+  :custom
+  ;; 抽卡记录的本地保存路径，请按需修改。
+  (hoyogacha-data-save-file "/path/to/your/data.json"))
+#+end_src
+
+几点说明：
+
+- =package-archives= 中的归档名 =tomoelpa= 可以自行命名，只要不与其它归档重名即可；URL 指向 TomoELPA 的 =snapshots= 频道。
+- 首次启动时若提示找不到 =hoyogacha=，先执行一次 =M-x package-refresh-contents=，再重启 Emacs。
+- 想使用稳定版而不是快照版时，把 URL 中的 =snapshots= 换成 =releases= 即可。
+- 安装完成后不需要再手动 =require 'hoyogacha=，=use-package= 会负责加载。
+
+*** 可选：使用 use-package 的 =:vc= 关键字安装
+
+Emacs 30.1 及以上版本内置的 =use-package= 支持 =:vc= 关键字，可以直接从 Git 仓库拉取并安装源码，适合想跟进最新代码的用户：
+
+#+begin_src elisp
+(use-package hoyogacha
+  :demand t
+  :vc (:url "https://github.com/TomoeMami/hoyogacha.el.git"
+            :rev :newest)
+  :custom
+  (hoyogacha-data-save-file "/path/to/your/data.json"))
+#+end_src
+
+- =:url= 指定仓库地址；如果您已配置好 GitHub 的 SSH key，也可以改用 =git@github.com:TomoeMami/hoyogacha.el.git=。
+- =:rev :newest= 表示跟踪默认分支的最新提交。首次加载时 =use-package= 会自动克隆仓库并构建安装，之后可用 =M-x package-vc-upgrade= 更新。
+- 这种方式与上面的 TomoELPA 方式二选一即可，不要同时配置。
+
+*** 手动安装（不推荐）
+
+将 =hoyogacha.el= 文件放置到您的 Emacs =load-path= 中，并确保已安装 =plz=，然后在配置文件中添加：
 
 #+begin_src elisp
 (use-package plz :ensure t)
 (require 'hoyogacha)
-#+end_src
-
-或者在31之后的Emacs中，通过内置的vc方式下载：
-#+begin_src elisp
-(use-package bangumi :demand t
-  :vc (:url "git@github.com:TomoeMami/hoyogacha.el"
-            :rev :newest))
-#+end_src
-
-如果愿意从我的自建ELPA 安装：
-#+begin_src elisp
-(add-to-list 'package-archives
-                 '("TomoELPA" . "https://tomoemami.github.io/tomoelpa/snapshots/"))
-(list-packages)
-(package-install 'hoyogacha)
 #+end_src
 ** 使用方法
 配置用于存储数据文件的路径：
